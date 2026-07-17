@@ -132,6 +132,12 @@ jobs:
       # The product's local-ASR boundary must reject unknown/corrupted models
       # before transcription. This desktop-native test is macOS-only because
       # the desktop crate links the platform capture stack.
+      - name: Build desktop sidecars (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          ./scripts/build-desktop-binaries.sh aarch64-apple-darwin
+
       - name: Local Whisper model-integrity tests (macOS)
         if: runner.os == 'macOS'
         shell: bash
