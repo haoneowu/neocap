@@ -1725,6 +1725,96 @@ mod tests {
     }
 
     #[test]
+    fn neocap_p0_composition_survives_save_and_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = ProjectConfiguration::default();
+        config.aspect_ratio = Some(AspectRatio::Vertical);
+        config.camera.shape = CameraShape::Circle;
+        config.camera.manual_position = Some(XY::new(0.8, 0.2));
+        config.captions = Some(CaptionsData {
+            source_timed: true,
+            settings: CaptionSettings {
+                enabled: true,
+                preset: "reels-bounce".to_string(),
+                word_animation: true,
+                ..Default::default()
+            },
+            segments: vec![CaptionSegment {
+                id: "caption-1".to_string(),
+                start: 1.0,
+                end: 2.0,
+                text: "你好NeoCap".to_string(),
+                words: vec![
+                    CaptionWord {
+                        text: "你".to_string(),
+                        start: 1.0,
+                        end: 1.25,
+                    },
+                    CaptionWord {
+                        text: "好".to_string(),
+                        start: 1.25,
+                        end: 1.5,
+                    },
+                ],
+            }],
+        });
+        config.timeline = Some(TimelineConfiguration {
+            segments: vec![],
+            zoom_segments: vec![ZoomSegment {
+                start: 0.7,
+                end: 3.5,
+                amount: 2.0,
+                mode: ZoomMode::Auto,
+                glide_direction: GlideDirection::None,
+                glide_speed: 0.5,
+                instant_animation: false,
+                edge_snap_ratio: 0.25,
+            }],
+            scene_segments: vec![],
+            mask_segments: vec![MaskSegment {
+                start: 0.5,
+                end: 3.0,
+                track: 0,
+                enabled: true,
+                mask_type: MaskKind::Sensitive,
+                coordinate_space: MaskCoordinateSpace::DisplayContent,
+                center: XY::new(0.5, 0.5),
+                size: XY::new(0.2, 0.2),
+                feather: 0.0,
+                opacity: 1.0,
+                pixelation: 16.0,
+                darkness: 0.0,
+                fade_duration: 0.15,
+                keyframes: MaskKeyframes::default(),
+            }],
+            text_segments: vec![],
+            caption_segments: vec![],
+            keyboard_segments: vec![],
+            audio_segments: vec![],
+        });
+
+        config.write(dir.path()).unwrap();
+        let reopened = ProjectConfiguration::load(dir.path()).unwrap();
+
+        assert!(matches!(reopened.aspect_ratio, Some(AspectRatio::Vertical)));
+        assert!(matches!(reopened.camera.shape, CameraShape::Circle));
+        assert_eq!(reopened.camera.manual_position.unwrap().x, 0.8);
+
+        let captions = reopened.captions.as_ref().unwrap();
+        assert!(captions.source_timed);
+        assert!(captions.settings.word_animation);
+        assert_eq!(captions.settings.preset, "reels-bounce");
+        assert_eq!(captions.segments[0].words[1].text, "好");
+
+        let timeline = reopened.timeline.as_ref().unwrap();
+        assert!(matches!(timeline.zoom_segments[0].mode, ZoomMode::Auto));
+        assert_eq!(
+            timeline.mask_segments[0].coordinate_space,
+            MaskCoordinateSpace::DisplayContent
+        );
+    }
+
+    #[test]
     fn load_uses_cursor_motion_blur_when_screen_motion_blur_is_missing() {
         let dir = tempfile::tempdir().unwrap();
         write_config_with_motion_blur_values(dir.path(), 0.0, None);

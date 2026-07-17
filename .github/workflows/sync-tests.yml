@@ -113,7 +113,10 @@ jobs:
       - name: Timestamp pipeline unit + property tests
         shell: bash
         run: |
-          cargo test --locked -p cap-timestamp -p cap-enc-ffmpeg
+          # Project-schema contracts own NeoCap's persisted session clock,
+          # caption, mask, and layout data. Keep them in the native matrix so
+          # a renderer/recording green result cannot hide a migration break.
+          cargo test --locked -p cap-project -p cap-timestamp -p cap-enc-ffmpeg
           cargo test --locked -p cap-recording --lib
           cargo test --locked -p cap-rendering
 
