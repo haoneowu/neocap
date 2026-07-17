@@ -129,6 +129,15 @@ jobs:
         run: |
           cargo test --locked -p cap-enc-avfoundation
 
+      # Runs the actual synthetic Studio pipeline at its normal production
+      # queue sizes. This guards cooperative source scheduling, segmented
+      # muxing and AV alignment without capture hardware or TCC permission.
+      - name: Native Studio pipeline fixture (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          bash crates/recording/run-synthetic-tests.sh --duration 8 studio-mode
+
       # The product's local-ASR boundary must reject unknown/corrupted models
       # before transcription. This desktop-native test is macOS-only because
       # the desktop crate links the platform capture stack.
@@ -168,6 +177,14 @@ jobs:
           # overload-drop policy (default: 30 frames).
           CAP_MUXER_BUFFER_SIZE: "512"
         run: |
+          # Pull requests must be reproducible across OSes. Scheduled runs
+          # intentionally use a fresh fuzz seed, which the JSON artifact
+          # records for reruns.
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            export CAP_SYNC_MATRIX_SEED=20260717
+          else
+            unset CAP_SYNC_MATRIX_SEED
+          fi
           cargo test --locked -p cap-recording --test sync_matrix -- --nocapture
 
       # Verifies the editor's playback machinery (decoders, frame scheduling,

@@ -40,6 +40,10 @@ const ABS_TOLERANCE_SECS: f64 = 0.25;
 const REL_TOLERANCE_SECS: f64 = 0.15;
 /// Tolerance for decoded audio duration vs generated duration.
 const AUDIO_DURATION_TOLERANCE_SECS: f64 = 0.15;
+/// Random cases run in real time. Above this CPU-generated pixel rate, dense
+/// patterns measure hosted-runner scheduling rather than the timestamp path.
+/// Dedicated deterministic cases still cover much higher delivered rates.
+const MAX_RANDOM_DENSE_PIXELS_PER_SECOND: u64 = 30_000_000;
 
 #[derive(Debug, Clone, Copy)]
 enum VideoScenario {
@@ -1105,7 +1109,8 @@ fn random_video_case(rng: &mut Rng) -> VideoCase {
         fps
     };
     let (width, height) = rng.pick(&[(160u32, 120u32), (320, 240), (640, 360)]);
-    let content = rng.pick(&[Content::Flat, Content::Noise, Content::Motion]);
+    let requested_content = rng.pick(&[Content::Flat, Content::Noise, Content::Motion]);
+    let content = random_case_content(width, height, delivered_fps, requested_content);
     let fragmented = rng.f64() < 0.75;
 
     let period = 1.0 / f64::from(delivered_fps);
@@ -1153,6 +1158,34 @@ fn random_video_case(rng: &mut Rng) -> VideoCase {
         content,
         rng_seed: rng.next(),
     }
+}
+
+fn random_case_content(width: u32, height: u32, delivered_fps: u32, requested: Content) -> Content {
+    let pixel_rate = u64::from(width) * u64::from(height) * u64::from(delivered_fps);
+    if requested != Content::Flat && pixel_rate > MAX_RANDOM_DENSE_PIXELS_PER_SECOND {
+        Content::Flat
+    } else {
+        requested
+    }
+}
+
+#[test]
+fn random_dense_content_is_bounded_to_sustainable_pixel_rates() {
+    assert_eq!(
+        random_case_content(640, 360, 316, Content::Motion),
+        Content::Flat,
+        "dense 72.8 MP/s Motion belongs in a deterministic stress test"
+    );
+    assert_eq!(
+        random_case_content(320, 240, 120, Content::Noise),
+        Content::Noise,
+        "ordinary random capture shapes retain dense-content coverage"
+    );
+    assert_eq!(
+        random_case_content(640, 360, 1_000, Content::Flat),
+        Content::Flat,
+        "flat high-rate cases stay available for timestamp stress"
+    );
 }
 
 /// A random audio device shape: any rate from the set real devices negotiate,
