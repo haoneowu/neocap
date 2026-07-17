@@ -12,6 +12,9 @@ import {
 	type TimelineSegment,
 } from "~/utils/tauri";
 
+import { getCaptionTextFromWords } from "./caption-text";
+
+export { getCaptionTextFromWords } from "./caption-text";
 export { segmentCaptionsForShortForm } from "./short-form-captions";
 export const DEFAULT_WHISPER_CAPTION_MODEL = "small";
 // This product is local-first and Chinese-first. Whisper small is multilingual,
@@ -486,49 +489,6 @@ export async function transcribeEditorCaptions(
 		? "Parakeet"
 		: "Whisper";
 	return await commands.transcribeAudio(videoPath, modelPath, language, engine);
-}
-
-const CAPTION_ATTACHING_PUNCTUATION = new Set([
-	",",
-	".",
-	"!",
-	"?",
-	";",
-	":",
-	"%",
-	")",
-	"]",
-	"}",
-	"'",
-	"’",
-	"、",
-	"。",
-	"！",
-	"？",
-	"；",
-	"：",
-	"，",
-]);
-
-function captionTokenAttachesToPrevious(text: string) {
-	const firstChar = text.trim().charAt(0);
-	return firstChar.length > 0 && CAPTION_ATTACHING_PUNCTUATION.has(firstChar);
-}
-
-export function getCaptionTextFromWords(words: CaptionWord[]) {
-	let text = "";
-
-	for (const word of words) {
-		const wordText = word.text.trim();
-		if (wordText.length === 0) continue;
-
-		if (text.length > 0 && !captionTokenAttachesToPrevious(wordText)) {
-			text += " ";
-		}
-		text += wordText;
-	}
-
-	return text;
 }
 
 export function syncCaptionWordsWithText(

@@ -1,4 +1,5 @@
 import type { CaptionSegment, CaptionWord } from "~/utils/tauri";
+import { getCaptionTextFromWords } from "./caption-text";
 
 const SHORT_FORM_PAUSE_SECONDS = 0.18;
 const SHORT_FORM_MAX_HAN_CHARACTERS = 8;
@@ -6,53 +7,10 @@ const SHORT_FORM_MIN_HAN_CHARACTERS = 4;
 const SHORT_FORM_MAX_LATIN_WORDS = 4;
 const SHORT_FORM_MIN_LATIN_WORDS = 2;
 const SHORT_FORM_BOUNDARY_PUNCTUATION = /[。！？；!?;.]/u;
-const CAPTION_ATTACHING_PUNCTUATION = new Set([
-	",",
-	".",
-	"!",
-	"?",
-	";",
-	":",
-	"%",
-	")",
-	"]",
-	"}",
-	"'",
-	"’",
-	"、",
-	"。",
-	"！",
-	"？",
-	"；",
-	"：",
-	"，",
-]);
 const HAN_CHARACTER = /\p{Script=Han}/gu;
 
 function countHanCharacters(text: string) {
 	return text.match(HAN_CHARACTER)?.length ?? 0;
-}
-
-function formatPhraseText(words: CaptionWord[]) {
-	let text = "";
-
-	for (const word of words) {
-		const wordText = word.text.trim();
-		if (wordText.length === 0) continue;
-
-		const joinsChineseText =
-			countHanCharacters(text) > 0 && countHanCharacters(wordText) > 0;
-		if (
-			text.length > 0 &&
-			!CAPTION_ATTACHING_PUNCTUATION.has(wordText.charAt(0)) &&
-			!joinsChineseText
-		) {
-			text += " ";
-		}
-		text += wordText;
-	}
-
-	return text;
 }
 
 function isShortFormBoundary(
@@ -93,7 +51,7 @@ export function segmentCaptionsForShortForm(
 				id: `${segment.id}:short:${result.length}`,
 				start: first.start,
 				end: last.end,
-				text: formatPhraseText(phraseWords),
+				text: getCaptionTextFromWords(phraseWords),
 				words: phraseWords,
 			});
 			phraseWords = [];
