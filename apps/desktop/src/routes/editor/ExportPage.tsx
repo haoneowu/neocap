@@ -42,7 +42,10 @@ import {
 	type UploadProgress,
 } from "~/utils/tauri";
 import { type RenderState, useEditorContext } from "./context";
-import { RESOLUTION_OPTIONS } from "./Header";
+import {
+	getExportResolutionOptions,
+	isExportResolutionOption,
+} from "./export-profiles";
 import { Dialog, Field } from "./ui";
 
 class SilentError extends Error {}
@@ -167,6 +170,7 @@ export function ExportPage() {
 		setExportState,
 		exportState,
 		meta,
+		project,
 		refetchMeta,
 	} = useEditorContext();
 
@@ -224,6 +228,12 @@ export function ExportPage() {
 	const resetTransientExportOptions = () => {
 		setCursorOnly(false);
 	};
+	const exportResolutionOptions = () =>
+		getExportResolutionOptions(project.aspectRatio);
+	const availableExportResolutions = () =>
+		shouldUseGifMode()
+			? exportResolutionOptions().slice(0, 2)
+			: exportResolutionOptions();
 	const handleBack = () => {
 		resetTransientExportOptions();
 		setDialog((d) => ({ ...d, open: false }));
@@ -246,10 +256,16 @@ export function ExportPage() {
 		if (disablesLinkExport() && _settings.exportTo === "link")
 			ret.exportTo = "file";
 
+		if (
+			!isExportResolutionOption(
+				_settings.resolution,
+				availableExportResolutions(),
+			)
+		) {
+			ret.resolution = { ...availableExportResolutions()[0] };
+		}
+
 		if (shouldUseGifMode()) {
-			if (!["720p", "1080p"].includes(_settings.resolution.value)) {
-				ret.resolution = { ...RESOLUTION_OPTIONS._720p };
-			}
 			if (GIF_FPS_OPTIONS.every((option) => option.value !== _settings.fps)) {
 				ret.fps = 15;
 			}
@@ -1041,13 +1057,13 @@ export function ExportPage() {
 															newSettings.format = option.value;
 															if (
 																option.value === "Gif" &&
-																!(
-																	settings.resolution.value === "720p" ||
-																	settings.resolution.value === "1080p"
+																!isExportResolutionOption(
+																	settings.resolution,
+																	exportResolutionOptions().slice(0, 2),
 																)
 															)
 																newSettings.resolution = {
-																	...RESOLUTION_OPTIONS._720p,
+																	...exportResolutionOptions()[0],
 																};
 															if (
 																option.value === "Gif" &&
@@ -1086,17 +1102,7 @@ export function ExportPage() {
 							icon={<IconLucideMonitor class="size-4" />}
 						>
 							<div class="flex gap-1.5">
-								<For
-									each={
-										shouldUseGifMode()
-											? [RESOLUTION_OPTIONS._720p, RESOLUTION_OPTIONS._1080p]
-											: [
-													RESOLUTION_OPTIONS._720p,
-													RESOLUTION_OPTIONS._1080p,
-													RESOLUTION_OPTIONS._4k,
-												]
-									}
-								>
+								<For each={availableExportResolutions()}>
 									{(option) => (
 										<button
 											type="button"
