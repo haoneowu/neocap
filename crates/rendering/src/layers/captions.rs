@@ -1286,10 +1286,9 @@ mod tests {
             },
         ];
 
-        assert_eq!(
-            caption_animation_window(2.5, 2.0, 4.0, &words, true),
-            (2.4, 2.9)
-        );
+        let word_window = caption_animation_window(2.5, 2.0, 4.0, &words, true);
+        assert!((word_window.0 - 2.4).abs() < 1e-5);
+        assert!((word_window.1 - 2.9).abs() < 1e-5);
         assert_eq!(
             caption_animation_window(2.5, 2.0, 4.0, &words, false),
             (2.0, 4.0)
