@@ -424,6 +424,7 @@ pub struct Camera {
 pub enum CameraShape {
     #[default]
     Square,
+    Circle,
     Source,
 }
 
@@ -1696,6 +1697,23 @@ mod tests {
                 .get("coordinateSpace")
                 .and_then(Value::as_str),
             Some("displayContent")
+        );
+    }
+
+    #[test]
+    fn circle_camera_shape_round_trips_in_project_json() {
+        let camera: Camera = serde_json::from_value(serde_json::json!({
+            "shape": "circle"
+        }))
+        .unwrap();
+
+        assert!(matches!(camera.shape, CameraShape::Circle));
+        assert_eq!(
+            serde_json::to_value(camera)
+                .unwrap()
+                .get("shape")
+                .and_then(Value::as_str),
+            Some("circle")
         );
     }
 

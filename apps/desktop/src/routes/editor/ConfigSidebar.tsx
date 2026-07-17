@@ -310,6 +310,10 @@ const CAMERA_SHAPES = [
 		value: "square",
 	},
 	{
+		name: "Circle",
+		value: "circle",
+	},
+	{
 		name: "Source",
 		value: "source",
 	},

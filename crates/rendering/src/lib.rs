@@ -3304,7 +3304,7 @@ impl ProjectUniforms {
                             ]
                         }
                     }
-                    CameraShape::Square => [
+                    CameraShape::Square | CameraShape::Circle => [
                         min_axis * scale + camera_padding,
                         min_axis * scale + camera_padding,
                     ],
@@ -3377,7 +3377,7 @@ impl ProjectUniforms {
 
                 let crop_bounds = match project.camera.shape {
                     CameraShape::Source => [0.0, 0.0, frame_size[0], frame_size[1]],
-                    CameraShape::Square => {
+                    CameraShape::Square | CameraShape::Circle => {
                         if frame_size[0] > frame_size[1] {
                             let offset = (frame_size[0] - frame_size[1]) / 2.0;
                             [offset, 0.0, frame_size[0] - offset, frame_size[1]]
@@ -3416,6 +3416,22 @@ impl ProjectUniforms {
                     final_target_bounds[2] - final_target_bounds[0],
                     final_target_bounds[3] - final_target_bounds[1],
                 ];
+                let (camera_rounding_px, camera_rounding_type) =
+                    if matches!(project.camera.shape, CameraShape::Circle) {
+                        (
+                            final_target_size[0].min(final_target_size[1]) * 0.5,
+                            rounding_type_value(CornerStyle::Rounded),
+                        )
+                    } else {
+                        (
+                            project.camera.rounding / 100.0
+                                * 0.5
+                                * final_target_size[0].min(final_target_size[1])
+                                * split_fade
+                                + min_axis * FLOATING_ROUNDING_FRAC * floating_t,
+                            rounding_type_value(project.camera.rounding_type),
+                        )
+                    };
 
                 CompositeVideoFrameUniforms {
                     output_size,
@@ -3423,12 +3439,8 @@ impl ProjectUniforms {
                     crop_bounds: final_crop_bounds,
                     target_bounds: final_target_bounds,
                     target_size: final_target_size,
-                    rounding_px: project.camera.rounding / 100.0
-                        * 0.5
-                        * final_target_size[0].min(final_target_size[1])
-                        * split_fade
-                        + min_axis * FLOATING_ROUNDING_FRAC * floating_t,
-                    rounding_type: rounding_type_value(project.camera.rounding_type),
+                    rounding_px: camera_rounding_px,
+                    rounding_type: camera_rounding_type,
                     mirror_x: if project.camera.mirror { 1.0 } else { 0.0 },
                     motion_blur_vector: camera_descriptor.movement_vector_uv,
                     motion_blur_zoom_center: camera_descriptor.zoom_center_uv,
