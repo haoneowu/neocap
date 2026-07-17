@@ -4980,6 +4980,16 @@ impl RendererLayers {
             self.display.render(&mut pass);
         }
 
+        // Privacy masks belong to the captured screen content. Composite them
+        // before cursor and camera overlays so a sensitive screen region does
+        // not accidentally blur a presenter's face or the instructional
+        // pointer that happens to cross the same output area.
+        if !uniforms.masks.is_empty() {
+            for mask in &uniforms.masks {
+                self.mask.render(device, queue, session, encoder, mask);
+            }
+        }
+
         if should_render_cursor {
             let mut pass = render_pass!(session.current_texture_view(), wgpu::LoadOp::Load);
             self.cursor.render(&mut pass);
@@ -4997,12 +5007,6 @@ impl RendererLayers {
         {
             let mut pass = render_pass!(session.current_texture_view(), wgpu::LoadOp::Load);
             self.camera.render(&mut pass);
-        }
-
-        if !uniforms.masks.is_empty() {
-            for mask in &uniforms.masks {
-                self.mask.render(device, queue, session, encoder, mask);
-            }
         }
 
         if !uniforms.texts.is_empty() {
