@@ -2067,14 +2067,14 @@ async fn clear_model_download_status(path: &Path) {
 /// Each part's size and SHA-256 comes from the `whisper-v1` GitHub release
 /// metadata. Adding a model is deliberately a source change: unknown model
 /// names fail closed instead of selecting a fallback URL.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct WhisperModelPart {
     url: &'static str,
     expected_size: u64,
     sha256: &'static str,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct WhisperModelManifest {
     name: &'static str,
     parts: &'static [WhisperModelPart],
@@ -2926,6 +2926,12 @@ mod tests {
     use std::path::Path;
     use tempfile::tempdir;
 
+    static FIXTURE_MODEL_PARTS: &[WhisperModelPart] = &[WhisperModelPart {
+        url: "https://example.invalid/fixture.bin",
+        expected_size: 4,
+        sha256: "20dacd925aeceadc9a0aa77d7869bd4904efd399b3571b5c464d13191adadccb",
+    }];
+
     fn word(text: &str, index: usize) -> CaptionWord {
         CaptionWord {
             text: text.to_string(),
@@ -2996,14 +3002,9 @@ mod tests {
     fn complete_model_file_must_match_the_manifest_checksum() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("fixture.bin");
-        let parts = [WhisperModelPart {
-            url: "https://example.invalid/fixture.bin",
-            expected_size: 4,
-            sha256: "20dacd925aeceadc9a0aa77d7869bd4904efd399b3571b5c464d13191adadccb",
-        }];
         let manifest = WhisperModelManifest {
             name: "fixture",
-            parts: &parts,
+            parts: FIXTURE_MODEL_PARTS,
         };
         let mut file = std::fs::File::create(&path).unwrap();
         file.write_all(b"ggml").unwrap();
