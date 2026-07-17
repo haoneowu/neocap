@@ -28,7 +28,10 @@ export type CaptionStylePresetId =
 	| "karaoke"
 	| "highlight"
 	| "pop"
-	| "minimal";
+	| "minimal"
+	| "news-highlight"
+	| "reels-bounce"
+	| "hook-card";
 
 export type CaptionPresetStyle = {
 	font: string;
@@ -45,6 +48,7 @@ export type CaptionPresetStyle = {
 	animation: CaptionAnimation;
 	uppercase: boolean;
 	fadeDuration: number;
+	position?: string;
 };
 
 export type CaptionStylePreset = {
@@ -158,6 +162,72 @@ export const CAPTION_STYLE_PRESETS: CaptionStylePreset[] = [
 			animation: "none",
 			uppercase: false,
 			fadeDuration: 0.25,
+		},
+	},
+	{
+		id: "news-highlight",
+		label: "新闻高亮",
+		description: "短句稳定展示，当前词以红色底块强调。",
+		style: {
+			font: "System Sans-Serif",
+			fontWeight: 800,
+			size: 56,
+			color: "#FFFFFF",
+			backgroundColor: "#000000",
+			backgroundOpacity: 0,
+			outline: true,
+			outlineColor: "#111111",
+			highlightColor: "#D71920",
+			activeWordHighlight: true,
+			highlightStyle: "pill",
+			animation: "none",
+			uppercase: false,
+			fadeDuration: 0.1,
+			position: "bottom-center",
+		},
+	},
+	{
+		id: "reels-bounce",
+		label: "Reels 弹跳",
+		description: "关键词变色并逐词弹跳，适合短视频口播。",
+		style: {
+			font: "System Sans-Serif",
+			fontWeight: 800,
+			size: 58,
+			color: "#FFFFFF",
+			backgroundColor: "#000000",
+			backgroundOpacity: 0,
+			outline: true,
+			outlineColor: "#111111",
+			highlightColor: "#FFD400",
+			activeWordHighlight: true,
+			highlightStyle: "color",
+			animation: "pop",
+			uppercase: false,
+			fadeDuration: 0.16,
+			position: "bottom-center",
+		},
+	},
+	{
+		id: "hook-card",
+		label: "Hook 标题卡",
+		description: "顶部白底粗体标题，适合开场结论或核心观点。",
+		style: {
+			font: "System Sans-Serif",
+			fontWeight: 800,
+			size: 64,
+			color: "#111111",
+			backgroundColor: "#FFFFFF",
+			backgroundOpacity: 100,
+			outline: false,
+			outlineColor: "#FFFFFF",
+			highlightColor: "#FACC15",
+			activeWordHighlight: false,
+			highlightStyle: "color",
+			animation: "bounce",
+			uppercase: false,
+			fadeDuration: 0.14,
+			position: "top-center",
 		},
 	},
 ];

@@ -164,6 +164,7 @@ const STYLE_PRESET_KEYS = new Set<keyof EditorCaptionSettings>([
 	"animation",
 	"uppercase",
 	"fadeDuration",
+	"position",
 ]);
 
 function hexToRgba(hex: string, opacityPercent: number) {
@@ -340,6 +341,7 @@ export function CaptionsTab(props: {
 			"settings",
 			produce((settings) => {
 				Object.assign(settings, preset.style);
+				if (preset.style.position) settings.manualPosition = null;
 				settings.preset = preset.id;
 			}),
 		);
