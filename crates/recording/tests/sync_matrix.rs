@@ -40,10 +40,10 @@ const ABS_TOLERANCE_SECS: f64 = 0.25;
 const REL_TOLERANCE_SECS: f64 = 0.15;
 /// Tolerance for decoded audio duration vs generated duration.
 const AUDIO_DURATION_TOLERANCE_SECS: f64 = 0.15;
-/// Random cases run in real time. Above this CPU-generated pixel rate, dense
-/// patterns measure hosted-runner scheduling rather than the timestamp path.
+/// Random cases run in real time. Above this generated pixel rate, even flat
+/// frames measure hosted-runner scheduling rather than the timestamp path.
 /// Dedicated deterministic cases still cover much higher delivered rates.
-const MAX_RANDOM_DENSE_PIXELS_PER_SECOND: u64 = 30_000_000;
+const MAX_RANDOM_PIXELS_PER_SECOND: u64 = 30_000_000;
 
 #[derive(Debug, Clone, Copy)]
 enum VideoScenario {
@@ -1103,14 +1103,14 @@ fn random_video_case(rng: &mut Rng) -> VideoCase {
     let fps = rng.range(10, 120) as u32;
     // Half the time the device free-runs at a rate unrelated to the
     // configured one — anywhere up to a 1000fps camera.
-    let delivered_fps = if rng.f64() < 0.5 {
+    let requested_delivered_fps = if rng.f64() < 0.5 {
         rng.range(10, 1000) as u32
     } else {
         fps
     };
     let (width, height) = rng.pick(&[(160u32, 120u32), (320, 240), (640, 360)]);
-    let requested_content = rng.pick(&[Content::Flat, Content::Noise, Content::Motion]);
-    let content = random_case_content(width, height, delivered_fps, requested_content);
+    let delivered_fps = requested_delivered_fps.min(max_random_realtime_fps(width, height));
+    let content = rng.pick(&[Content::Flat, Content::Noise, Content::Motion]);
     let fragmented = rng.f64() < 0.75;
 
     let period = 1.0 / f64::from(delivered_fps);
@@ -1160,31 +1160,23 @@ fn random_video_case(rng: &mut Rng) -> VideoCase {
     }
 }
 
-fn random_case_content(width: u32, height: u32, delivered_fps: u32, requested: Content) -> Content {
-    let pixel_rate = u64::from(width) * u64::from(height) * u64::from(delivered_fps);
-    if requested != Content::Flat && pixel_rate > MAX_RANDOM_DENSE_PIXELS_PER_SECOND {
-        Content::Flat
-    } else {
-        requested
-    }
+fn max_random_realtime_fps(width: u32, height: u32) -> u32 {
+    (MAX_RANDOM_PIXELS_PER_SECOND / (u64::from(width) * u64::from(height))).max(1) as u32
 }
 
 #[test]
-fn random_dense_content_is_bounded_to_sustainable_pixel_rates() {
-    assert_eq!(
-        random_case_content(640, 360, 316, Content::Motion),
-        Content::Flat,
-        "dense 72.8 MP/s Motion belongs in a deterministic stress test"
+fn random_delivery_rate_is_bounded_to_realtime_pixel_throughput() {
+    let max_640x360 = max_random_realtime_fps(640, 360);
+    assert_eq!(max_640x360, 130);
+    assert_eq!(622u32.min(max_640x360), 130);
+    assert!(
+        u64::from(640u32) * u64::from(360u32) * u64::from(max_640x360)
+            <= MAX_RANDOM_PIXELS_PER_SECOND
     );
     assert_eq!(
-        random_case_content(320, 240, 120, Content::Noise),
-        Content::Noise,
-        "ordinary random capture shapes retain dense-content coverage"
-    );
-    assert_eq!(
-        random_case_content(640, 360, 1_000, Content::Flat),
-        Content::Flat,
-        "flat high-rate cases stay available for timestamp stress"
+        1_000u32.min(max_random_realtime_fps(160, 120)),
+        1_000,
+        "small-frame high-rate coverage remains available"
     );
 }
 
