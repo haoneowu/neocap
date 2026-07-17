@@ -23,9 +23,25 @@ pub struct CursorMoveEvent {
     pub y: f64,
 }
 
+impl CursorMoveEvent {
+    /// Returns the recording-session timestamp used by rendering. New files
+    /// carry an integer microsecond value from the session anchor; old files
+    /// retain their original floating-point milliseconds.
+    pub fn resolved_time_ms(&self) -> f64 {
+        self.session_time_us
+            .map(|time_us| time_us as f64 / 1_000.0)
+            .unwrap_or(self.time_ms)
+    }
+
+    fn normalize_session_time(&mut self) {
+        self.time_ms = self.resolved_time_ms();
+    }
+}
+
 impl PartialOrd for CursorMoveEvent {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.time_ms.partial_cmp(&other.time_ms)
+        self.resolved_time_ms()
+            .partial_cmp(&other.resolved_time_ms())
     }
 }
 
@@ -41,9 +57,23 @@ pub struct CursorClickEvent {
     pub down: bool,
 }
 
+impl CursorClickEvent {
+    /// See [`CursorMoveEvent::resolved_time_ms`].
+    pub fn resolved_time_ms(&self) -> f64 {
+        self.session_time_us
+            .map(|time_us| time_us as f64 / 1_000.0)
+            .unwrap_or(self.time_ms)
+    }
+
+    fn normalize_session_time(&mut self) {
+        self.time_ms = self.resolved_time_ms();
+    }
+}
+
 impl PartialOrd for CursorClickEvent {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.time_ms.partial_cmp(&other.time_ms)
+        self.resolved_time_ms()
+            .partial_cmp(&other.resolved_time_ms())
     }
 }
 
@@ -67,7 +97,19 @@ pub struct CursorData {
 impl CursorData {
     pub fn load_from_file(path: &Path) -> Result<Self, String> {
         let file = File::open(path).map_err(|e| format!("Failed to open cursor file: {e}"))?;
-        serde_json::from_reader(file).map_err(|e| format!("Failed to parse cursor data: {e}"))
+        let mut cursor_data: Self = serde_json::from_reader(file)
+            .map_err(|e| format!("Failed to parse cursor data: {e}"))?;
+        cursor_data.normalize_session_times();
+        Ok(cursor_data)
+    }
+
+    fn normalize_session_times(&mut self) {
+        for event in &mut self.moves {
+            event.normalize_session_time();
+        }
+        for event in &mut self.clicks {
+            event.normalize_session_time();
+        }
     }
 }
 
@@ -80,7 +122,23 @@ pub struct CursorEvents {
 impl CursorEvents {
     pub fn load_from_file(path: &Path) -> Result<Self, String> {
         let file = File::open(path).map_err(|e| format!("Failed to open cursor file: {e}"))?;
-        serde_json::from_reader(file).map_err(|e| format!("Failed to parse cursor data: {e}"))
+        let mut cursor_events: Self = serde_json::from_reader(file)
+            .map_err(|e| format!("Failed to parse cursor data: {e}"))?;
+        cursor_events.normalize_session_times();
+        Ok(cursor_events)
+    }
+
+    /// Converts new persisted session-clock fields into the legacy millisecond
+    /// field consumed by existing render and export paths. This keeps the
+    /// migration boundary at IO rather than making every renderer branch on
+    /// project schema age.
+    pub fn normalize_session_times(&mut self) {
+        for event in &mut self.moves {
+            event.normalize_session_time();
+        }
+        for event in &mut self.clicks {
+            event.normalize_session_time();
+        }
     }
 
     pub fn stabilize_short_lived_cursor_shapes(
@@ -428,5 +486,24 @@ mod tests {
         let json = serde_json::to_string(&event).expect("cursor event serializes");
 
         assert!(json.contains("\"session_time_us\":42000"));
+    }
+
+    #[test]
+    fn session_clock_is_normalized_before_legacy_render_paths_consume_events() {
+        let mut move_event = move_event(9.0, "pointer");
+        move_event.session_time_us = Some(42_250);
+        let mut click_event = click_event(8.0, "pointer");
+        click_event.session_time_us = Some(42_500);
+        let mut events = CursorEvents {
+            moves: vec![move_event],
+            clicks: vec![click_event],
+        };
+
+        events.normalize_session_times();
+
+        assert_eq!(events.moves[0].time_ms, 42.25);
+        assert_eq!(events.clicks[0].time_ms, 42.5);
+        assert_eq!(events.moves[0].resolved_time_ms(), 42.25);
+        assert_eq!(events.clicks[0].resolved_time_ms(), 42.5);
     }
 }
