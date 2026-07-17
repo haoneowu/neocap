@@ -397,9 +397,6 @@ async refreshCameraFeed() : Promise<null> {
 async createDir(path: string, recursive: boolean) : Promise<null> {
     return await TAURI_INVOKE("create_dir", { path, recursive });
 },
-async saveModelFile(path: string, data: number[]) : Promise<null> {
-    return await TAURI_INVOKE("save_model_file", { path, data });
-},
 async transcribeAudio(videoPath: string, modelPath: string, language: string, engine: TranscriptionEngine) : Promise<CaptionData> {
     return await TAURI_INVOKE("transcribe_audio", { videoPath, modelPath, language, engine });
 },
@@ -735,7 +732,7 @@ title: string }
  * Rendered display/camera placement of the latest preview frame, in
  * output-frame pixels — consumed by the editor's on-canvas layout overlay.
  */
-export type FrameLayoutEvent = { display: [number, number, number, number]; display_content: [number, number, number, number]; camera: [number, number, number, number] | null; output_width: number; output_height: number }
+export type FrameLayoutEvent = { display: [number, number, number, number]; display_content: [number, number, number, number]; display_crop_bounds: [number, number, number, number]; display_frame_size: [number, number]; camera: [number, number, number, number] | null; output_width: number; output_height: number }
 /**
  * Decorative frame drawn around the screen recording (browser window,
  * macOS window, MacBook bezel, ...). The video is inset inside the frame's

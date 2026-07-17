@@ -3,7 +3,7 @@ use cap_project::{
     mask_effect_contract,
 };
 
-use crate::{CompositeVideoFrameUniforms, MaskRenderMode, PreparedMask};
+use crate::{MaskRenderMode, PreparedMask};
 
 const MASK_EFFECT_BASE_HEIGHT: f32 = 1080.0;
 
@@ -68,15 +68,49 @@ fn interpolate_scalar(base: f64, keys: &[MaskScalarKeyframe], time: f64) -> f64 
     sorted.last().map(|k| k.value).unwrap_or(base)
 }
 
-pub fn interpolate_masks(
+/// Produces legacy final-output masks. These retain their original canvas
+/// coordinate meaning for existing projects.
+pub fn interpolate_output_masks(
     output_size: XY<u32>,
     frame_time: f64,
-    display: &CompositeVideoFrameUniforms,
     segments: &[MaskSegment],
+) -> Vec<PreparedMask> {
+    interpolate_masks_for_space(
+        output_size,
+        frame_time,
+        segments,
+        MaskCoordinateSpace::Output,
+    )
+}
+
+/// Produces source-space masks for new `displayContent` segments. The result
+/// is applied directly to the decoded display texture before crop, zoom, and
+/// split layout, so it follows the protected source pixels by construction.
+pub fn interpolate_display_content_masks(
+    source_size: XY<u32>,
+    frame_time: f64,
+    segments: &[MaskSegment],
+) -> Vec<PreparedMask> {
+    interpolate_masks_for_space(
+        source_size,
+        frame_time,
+        segments,
+        MaskCoordinateSpace::DisplayContent,
+    )
+}
+
+fn interpolate_masks_for_space(
+    output_size: XY<u32>,
+    frame_time: f64,
+    segments: &[MaskSegment],
+    coordinate_space: MaskCoordinateSpace,
 ) -> Vec<PreparedMask> {
     let mut prepared = Vec::new();
 
-    for segment in segments.iter().filter(|s| s.enabled) {
+    for segment in segments
+        .iter()
+        .filter(|s| s.enabled && s.coordinate_space == coordinate_space)
+    {
         if frame_time < segment.start || frame_time > segment.end {
             continue;
         }
@@ -110,13 +144,6 @@ pub fn interpolate_masks(
         };
 
         let clamped_size = XY::new(size.x.clamp(0.01, 2.0), size.y.clamp(0.01, 2.0));
-        let (position, clamped_size) = match segment.coordinate_space {
-            MaskCoordinateSpace::Output => (position, clamped_size),
-            MaskCoordinateSpace::DisplayContent => {
-                display_content_to_output(position, clamped_size, output_size, display)
-            }
-        };
-
         let min_axis = clamped_size.x.min(clamped_size.y).abs();
         let segment_feather = if let MaskKind::Highlight = segment.mask_type {
             0.0
@@ -125,7 +152,7 @@ pub fn interpolate_masks(
         };
         let feather = (min_axis * 0.5 * segment_feather.max(0.0)).max(0.0001) as f32;
 
-        let prepared_center = match segment.coordinate_space {
+        let prepared_center = match coordinate_space {
             // Preserve historical output-canvas behaviour for saved projects.
             MaskCoordinateSpace::Output => XY::new(
                 position.x.clamp(0.0, 1.0) as f32,
@@ -153,33 +180,6 @@ pub fn interpolate_masks(
     }
 
     prepared
-}
-
-/// Maps a rectangle normalized to the screen content into final output-canvas
-/// coordinates. `display.target_bounds` is resolved after zoom and split
-/// layout, so the same sensitive source region moves/scales with the pixels it
-/// protects. This deliberately happens before cursor/camera overlays render.
-fn display_content_to_output(
-    position: XY<f64>,
-    size: XY<f64>,
-    output_size: XY<u32>,
-    display: &CompositeVideoFrameUniforms,
-) -> (XY<f64>, XY<f64>) {
-    let output_width = f64::from(output_size.x).max(1.0);
-    let output_height = f64::from(output_size.y).max(1.0);
-    let content_width = f64::from(display.target_size[0]).max(0.0);
-    let content_height = f64::from(display.target_size[1]).max(0.0);
-
-    (
-        XY::new(
-            (f64::from(display.target_bounds[0]) + position.x * content_width) / output_width,
-            (f64::from(display.target_bounds[1]) + position.y * content_height) / output_height,
-        ),
-        XY::new(
-            size.x * content_width / output_width,
-            size.y * content_height / output_height,
-        ),
-    )
 }
 
 fn sensitive_effect(stored_effect: f64) -> (MaskRenderMode, f64) {
@@ -242,20 +242,11 @@ mod tests {
     #[test]
     fn sensitive_mask_effect_scales_with_output_height() {
         let segment = sample_segment();
-        let display = CompositeVideoFrameUniforms::default();
-        let smaller = interpolate_masks(
-            XY::new(872, 720),
-            1.0,
-            &display,
-            std::slice::from_ref(&segment),
-        );
-        let low = interpolate_masks(
-            XY::new(1308, 1080),
-            1.0,
-            &display,
-            std::slice::from_ref(&segment),
-        );
-        let high = interpolate_masks(XY::new(2616, 2160), 1.0, &display, &[segment]);
+        let smaller =
+            interpolate_output_masks(XY::new(872, 720), 1.0, std::slice::from_ref(&segment));
+        let low =
+            interpolate_output_masks(XY::new(1308, 1080), 1.0, std::slice::from_ref(&segment));
+        let high = interpolate_output_masks(XY::new(2616, 2160), 1.0, &[segment]);
 
         assert_eq!(smaller.len(), 1);
         assert_eq!(low.len(), 1);
@@ -274,12 +265,7 @@ mod tests {
             value: 0.01,
         });
 
-        let masks = interpolate_masks(
-            XY::new(1920, 1080),
-            1.0,
-            &CompositeVideoFrameUniforms::default(),
-            &[segment],
-        );
+        let masks = interpolate_output_masks(XY::new(1920, 1080), 1.0, &[segment]);
 
         assert_eq!(masks[0].opacity, 1.0);
         assert_eq!(masks[0].mode, MaskRenderMode::Pixelate);
@@ -296,12 +282,7 @@ mod tests {
             let mut segment = sample_segment();
             segment.pixelation = stored_effect;
 
-            let masks = interpolate_masks(
-                XY::new(1920, 1080),
-                1.0,
-                &CompositeVideoFrameUniforms::default(),
-                &[segment],
-            );
+            let masks = interpolate_output_masks(XY::new(1920, 1080), 1.0, &[segment]);
 
             assert_eq!(masks[0].mode, expected_mode);
             assert_eq!(masks[0].effect_size, expected_size);
@@ -314,64 +295,41 @@ mod tests {
         let mut segment = sample_segment();
         segment.pixelation = 0.0;
 
-        let masks = interpolate_masks(
-            XY::new(1920, 1080),
-            1.0,
-            &CompositeVideoFrameUniforms::default(),
-            &[segment],
-        );
+        let masks = interpolate_output_masks(XY::new(1920, 1080), 1.0, &[segment]);
 
         assert_eq!(masks[0].mode, MaskRenderMode::Pixelate);
         assert_eq!(masks[0].effect_size, 16.0);
     }
 
     #[test]
-    fn display_content_mask_tracks_the_resolved_zoomed_display() {
+    fn display_content_mask_stays_in_source_space_before_crop_and_zoom() {
         let mut segment = sample_segment();
         segment.coordinate_space = MaskCoordinateSpace::DisplayContent;
         segment.center = XY::new(0.25, 0.75);
         segment.size = XY::new(0.2, 0.1);
-        let display = CompositeVideoFrameUniforms {
-            target_bounds: [-240.0, 80.0, 1680.0, 1160.0],
-            target_size: [1920.0, 1080.0],
-            ..Default::default()
-        };
-
-        let masks = interpolate_masks(XY::new(1920, 1080), 1.0, &display, &[segment]);
+        let masks = interpolate_display_content_masks(XY::new(1920, 1080), 1.0, &[segment]);
 
         assert_eq!(masks.len(), 1);
-        assert_eq!(masks[0].center, XY::new(0.125, 0.824_074_1));
+        assert_eq!(masks[0].center, XY::new(0.25, 0.75));
         assert_eq!(masks[0].size, XY::new(0.2, 0.1));
     }
 
     #[test]
     fn legacy_output_mask_ignores_display_placement() {
         let segment = sample_segment();
-        let display = CompositeVideoFrameUniforms {
-            target_bounds: [-240.0, 80.0, 1680.0, 1160.0],
-            target_size: [1920.0, 1080.0],
-            ..Default::default()
-        };
-
-        let masks = interpolate_masks(XY::new(1920, 1080), 1.0, &display, &[segment]);
+        let masks = interpolate_output_masks(XY::new(1920, 1080), 1.0, &[segment]);
 
         assert_eq!(masks[0].center, XY::new(0.5, 0.5));
         assert_eq!(masks[0].size, XY::new(0.25, 0.25));
     }
 
     #[test]
-    fn display_content_mask_keeps_partially_offscreen_source_geometry() {
+    fn display_content_masks_do_not_leak_into_legacy_output_pass() {
         let mut segment = sample_segment();
         segment.coordinate_space = MaskCoordinateSpace::DisplayContent;
         segment.center = XY::new(0.0, 0.5);
-        let display = CompositeVideoFrameUniforms {
-            target_bounds: [-240.0, 0.0, 1680.0, 1080.0],
-            target_size: [1920.0, 1080.0],
-            ..Default::default()
-        };
+        let masks = interpolate_output_masks(XY::new(1920, 1080), 1.0, &[segment]);
 
-        let masks = interpolate_masks(XY::new(1920, 1080), 1.0, &display, &[segment]);
-
-        assert_eq!(masks[0].center, XY::new(-0.125, 0.5));
+        assert!(masks.is_empty());
     }
 }

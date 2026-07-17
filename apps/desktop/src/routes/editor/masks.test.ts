@@ -53,6 +53,8 @@ describe("mask effects", () => {
 		const layout: FrameLayoutEvent = {
 			display: [-240, 80, 1680, 1160],
 			display_content: [-240, 80, 1680, 1160],
+			display_crop_bounds: [0, 0, 1920, 1080],
+			display_frame_size: [1920, 1080],
 			camera: null,
 			output_width: 1920,
 			output_height: 1080,
@@ -70,6 +72,8 @@ describe("mask effects", () => {
 		const layout: FrameLayoutEvent = {
 			display: [-240, 80, 1680, 1160],
 			display_content: [-240, 80, 1680, 1160],
+			display_crop_bounds: [0, 0, 1920, 1080],
+			display_frame_size: [1920, 1080],
 			camera: null,
 			output_width: 1920,
 			output_height: 1080,
@@ -79,6 +83,27 @@ describe("mask effects", () => {
 		expect(maskStateToOutput(legacy, 0.5, layout)).toEqual({
 			position: { x: 0.5, y: 0.5 },
 			size: { x: 0.35, y: 0.35 },
+		});
+	});
+
+	it("uses the same source crop transform as the display composite", () => {
+		const segment = defaultMaskSegment(0, 1);
+		segment.center = { x: 0.5, y: 0.5 };
+		segment.size = { x: 0.2, y: 0.2 };
+		const layout: FrameLayoutEvent = {
+			display: [0, 0, 1920, 1080],
+			display_content: [0, 0, 1920, 1080],
+			// A 2x centred zoom crops the source to [480, 270, 1440, 810].
+			display_crop_bounds: [480, 270, 1440, 810],
+			display_frame_size: [1920, 1080],
+			camera: null,
+			output_width: 1920,
+			output_height: 1080,
+		};
+
+		expect(maskStateToOutput(segment, 0.5, layout)).toEqual({
+			position: { x: 0.5, y: 0.5 },
+			size: { x: 0.4, y: 0.4 },
 		});
 	});
 });

@@ -26,7 +26,7 @@ import {
 	type EditorCaptionSettings,
 } from "~/store/captions";
 import type { OrganizationBrandColorSwatch } from "~/utils/organization-branding";
-import { commands, events } from "~/utils/tauri";
+import { type CaptionWord, commands, events } from "~/utils/tauri";
 import IconCapChevronDown from "~icons/cap/chevron-down";
 import IconCapCircleCheck from "~icons/cap/circle-check";
 import IconLucideDownload from "~icons/lucide/download";
@@ -47,6 +47,7 @@ import {
 	supportsParakeetTranscription,
 	syncCaptionWordsWithText,
 	transcribeEditorCaptions,
+	updateCaptionWordTiming,
 } from "./captions";
 import { useEditorContext } from "./context";
 import {
@@ -160,6 +161,7 @@ const STYLE_PRESET_KEYS = new Set<keyof EditorCaptionSettings>([
 	"outlineColor",
 	"highlightColor",
 	"activeWordHighlight",
+	"wordAnimation",
 	"highlightStyle",
 	"animation",
 	"uppercase",
@@ -307,11 +309,93 @@ export function CaptionsTab(props: {
 		);
 	};
 
+	const updateSelectedCaptionWordTiming = (
+		wordIndex: number,
+		update: Partial<Pick<CaptionWord, "start" | "end">>,
+	) => {
+		const index = selectedCaptionIndex();
+		if (index < 0) return;
+
+		setProject(
+			produce((currentProject: typeof project) => {
+				const timeline = currentProject.timeline;
+				const timelineSegment = timeline?.captionSegments?.[index];
+				if (!timeline || !timelineSegment || !timelineSegment.words?.length)
+					return;
+
+				const beforeWord = timelineSegment.words[wordIndex];
+				if (!beforeWord) return;
+
+				timelineSegment.words = updateCaptionWordTiming(
+					timelineSegment.words,
+					wordIndex,
+					update,
+					timelineSegment.start,
+					timelineSegment.end,
+				);
+				const editedWord = timelineSegment.words[wordIndex];
+				if (!editedWord) return;
+
+				// The visible track is output-time; captions are saved as source-time
+				// masters. Identify this word by its *pre-edit* source timestamp so
+				// repeated text (for example “的 的”) stays unambiguous.
+				const source = currentProject.captions?.segments?.find(
+					(segment) => segment.id === sourceCaptionId(timelineSegment.id),
+				);
+				if (!source?.words?.length) return;
+
+				const previousSourceStart = mapEditedTimeToSource(
+					beforeWord.start,
+					timeline.segments,
+					editorInstance.recordings.segments,
+				);
+				const nextSourceStart = mapEditedTimeToSource(
+					editedWord.start,
+					timeline.segments,
+					editorInstance.recordings.segments,
+				);
+				const nextSourceEnd = mapEditedTimeToSource(
+					editedWord.end,
+					timeline.segments,
+					editorInstance.recordings.segments,
+				);
+				if (
+					previousSourceStart === null ||
+					nextSourceStart === null ||
+					nextSourceEnd === null
+				)
+					return;
+
+				let sourceWordIndex = -1;
+				let closestDistance = Number.POSITIVE_INFINITY;
+				for (const [candidateIndex, candidate] of source.words.entries()) {
+					const distance = Math.abs(candidate.start - previousSourceStart);
+					if (distance < closestDistance) {
+						sourceWordIndex = candidateIndex;
+						closestDistance = distance;
+					}
+				}
+				if (sourceWordIndex < 0 || closestDistance > 0.02) return;
+
+				source.words = updateCaptionWordTiming(
+					source.words,
+					sourceWordIndex,
+					{ start: nextSourceStart, end: nextSourceEnd },
+					source.start,
+					source.end,
+				);
+			}),
+		);
+	};
+
 	const getSetting = <K extends keyof EditorCaptionSettings>(
 		key: K,
 	): NonNullable<EditorCaptionSettings[K]> =>
-		(project?.captions?.settings?.[key] ??
-			defaultCaptionSettings[key]) as NonNullable<EditorCaptionSettings[K]>;
+		((
+			project?.captions?.settings as Partial<EditorCaptionSettings> | undefined
+		)?.[key] ?? defaultCaptionSettings[key]) as NonNullable<
+			EditorCaptionSettings[K]
+		>;
 
 	const updateCaptionSetting = <K extends keyof EditorCaptionSettings>(
 		key: K,
@@ -1165,6 +1249,26 @@ export function CaptionsTab(props: {
 									</p>
 								</div>
 
+								<div class="flex items-center justify-between">
+									<div class="flex flex-col gap-0.5">
+										<span class="text-gray-11 text-sm">
+											Word-Cued Animation
+										</span>
+										<span class="text-xs text-gray-10">
+											Restart the bounce or pop at each timed word.
+										</span>
+									</div>
+									<Toggle
+										checked={getSetting("wordAnimation")}
+										onChange={(checked) =>
+											updateCaptionSetting("wordAnimation", checked)
+										}
+										disabled={
+											!hasCaptions() || getSetting("animation") === "none"
+										}
+									/>
+								</div>
+
 								<Show when={getSetting("activeWordHighlight")}>
 									<div class="flex flex-col gap-2">
 										<span class="text-gray-11 text-sm">Highlight Style</span>
@@ -1527,6 +1631,58 @@ export function CaptionsTab(props: {
 														}
 													/>
 												</Subfield>
+												<Show when={(seg().words?.length ?? 0) > 0}>
+													<div class="space-y-2">
+														<p class="text-xs text-gray-10">
+															Word timing is constrained to this phrase and its
+															neighbouring words.
+														</p>
+														<For each={seg().words ?? []}>
+															{(word, wordIndex) => (
+																<div class="grid grid-cols-[minmax(0,1fr)_5.5rem_5.5rem] items-center gap-2">
+																	<span
+																		class="truncate text-sm text-gray-12"
+																		title={word.text}
+																	>
+																		{word.text}
+																	</span>
+																	<Input
+																		type="number"
+																		value={word.start.toFixed(2)}
+																		step="0.01"
+																		aria-label={`Start time for ${word.text}`}
+																		onChange={(event) =>
+																			updateSelectedCaptionWordTiming(
+																				wordIndex(),
+																				{
+																					start: Number.parseFloat(
+																						event.target.value,
+																					),
+																				},
+																			)
+																		}
+																	/>
+																	<Input
+																		type="number"
+																		value={word.end.toFixed(2)}
+																		step="0.01"
+																		aria-label={`End time for ${word.text}`}
+																		onChange={(event) =>
+																			updateSelectedCaptionWordTiming(
+																				wordIndex(),
+																				{
+																					end: Number.parseFloat(
+																						event.target.value,
+																					),
+																				},
+																			)
+																		}
+																	/>
+																</div>
+															)}
+														</For>
+													</div>
+												</Show>
 												<Subfield name="Fade Duration Override">
 													<Slider
 														value={[

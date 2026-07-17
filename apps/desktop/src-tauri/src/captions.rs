@@ -9,6 +9,7 @@ use futures::StreamExt;
 #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 use parakeet_rs::{ParakeetTDT, TimestampMode, Transcriber};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use specta::Type;
 use std::collections::HashMap;
 use std::fs::File;
@@ -201,13 +202,6 @@ fn validate_model_path(app: &AppHandle, path: &str) -> Result<PathBuf, String> {
 #[instrument]
 pub async fn create_dir(path: String, _recursive: bool) -> Result<(), String> {
     std::fs::create_dir_all(path).map_err(|e| format!("Failed to create directory: {e}"))
-}
-
-#[tauri::command]
-#[specta::specta]
-#[instrument]
-pub async fn save_model_file(path: String, data: Vec<u8>) -> Result<(), String> {
-    std::fs::write(&path, &data).map_err(|e| format!("Failed to write model file: {e}"))
 }
 
 enum AudioExtractionSource {
@@ -1331,9 +1325,20 @@ pub async fn transcribe_audio(
         return Err(format!("Video file not found at path: {video_path}"));
     }
 
-    if !validated_model_path.exists() {
+    let model_is_available = match &engine {
+        TranscriptionEngine::Whisper => {
+            let model_path = validated_model_path.clone();
+            tokio::task::spawn_blocking(move || whisper_model_file_matches_manifest(&model_path))
+                .await
+                .map_err(|e| format!("Failed to validate model file: {e}"))?
+        }
+        TranscriptionEngine::Parakeet => validated_model_path.exists(),
+    };
+    if !model_is_available {
         log::error!("Model file not found at path: {model_path}");
-        return Err(format!("Model file not found at path: {model_path}"));
+        return Err(format!(
+            "Model file not found or incomplete at path: {model_path}. Please download it again"
+        ));
     }
 
     let model_path = validated_model_path.to_string_lossy().to_string();
@@ -1610,6 +1615,10 @@ pub async fn save_captions(
         "activeWordHighlight".to_string(),
         serde_json::Value::Bool(settings.active_word_highlight),
     );
+    settings_obj.insert(
+        "wordAnimation".to_string(),
+        serde_json::Value::Bool(settings.word_animation),
+    );
 
     json_obj.insert(
         "settings".to_string(),
@@ -1766,6 +1775,12 @@ pub fn parse_captions_json(json: &str) -> Result<cap_project::CaptionsData, Stri
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
 
+                    let word_animation = settings_obj
+                        .get("wordAnimation")
+                        .or_else(|| settings_obj.get("word_animation"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+
                     let preset = settings_obj
                         .get("preset")
                         .and_then(|v| v.as_str())
@@ -1818,6 +1833,7 @@ pub fn parse_captions_json(json: &str) -> Result<cap_project::CaptionsData, Stri
                         linger_duration,
                         word_transition_duration,
                         active_word_highlight,
+                        word_animation,
                         manual_position,
                         preset,
                         animation,
@@ -2046,6 +2062,154 @@ async fn clear_model_download_status(path: &Path) {
     let _ = downloads.remove(&key);
 }
 
+/// Trusted release manifest for the Whisper assets we offer in the UI.
+///
+/// Each part's size and SHA-256 comes from the `whisper-v1` GitHub release
+/// metadata. Adding a model is deliberately a source change: unknown model
+/// names fail closed instead of selecting a fallback URL.
+#[derive(Clone, Copy)]
+struct WhisperModelPart {
+    url: &'static str,
+    expected_size: u64,
+    sha256: &'static str,
+}
+
+#[derive(Clone, Copy)]
+struct WhisperModelManifest {
+    name: &'static str,
+    parts: &'static [WhisperModelPart],
+}
+
+impl WhisperModelManifest {
+    fn total_size(self) -> u64 {
+        self.parts.iter().fold(0_u64, |total, part| {
+            total.saturating_add(part.expected_size)
+        })
+    }
+}
+
+const WHISPER_TINY_PARTS: &[WhisperModelPart] = &[WhisperModelPart {
+    url: "https://github.com/CapSoftware/transcription-models/releases/download/whisper-v1/ggml-tiny.bin",
+    expected_size: 77_691_713,
+    sha256: "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+}];
+
+const WHISPER_BASE_PARTS: &[WhisperModelPart] = &[WhisperModelPart {
+    url: "https://github.com/CapSoftware/transcription-models/releases/download/whisper-v1/ggml-base.bin",
+    expected_size: 147_951_465,
+    sha256: "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+}];
+
+const WHISPER_SMALL_PARTS: &[WhisperModelPart] = &[WhisperModelPart {
+    url: "https://github.com/CapSoftware/transcription-models/releases/download/whisper-v1/ggml-small.bin",
+    expected_size: 487_601_967,
+    sha256: "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+}];
+
+const WHISPER_MEDIUM_PARTS: &[WhisperModelPart] = &[
+    WhisperModelPart {
+        url: "https://github.com/CapSoftware/transcription-models/releases/download/whisper-v1/ggml-medium.bin.part0",
+        expected_size: 800_000_000,
+        sha256: "23182e96dea53b763310b202c4f33a7cea3c587d3795c439035bc5bd3c103ed9",
+    },
+    WhisperModelPart {
+        url: "https://github.com/CapSoftware/transcription-models/releases/download/whisper-v1/ggml-medium.bin.part1",
+        expected_size: 733_763_059,
+        sha256: "98cd5a140c0d4b457724b5c10c32309d8ec9a17ffc7f08be8867c346e71c3075",
+    },
+];
+
+const WHISPER_MODEL_MANIFESTS: &[WhisperModelManifest] = &[
+    WhisperModelManifest {
+        name: "tiny",
+        parts: WHISPER_TINY_PARTS,
+    },
+    WhisperModelManifest {
+        name: "base",
+        parts: WHISPER_BASE_PARTS,
+    },
+    WhisperModelManifest {
+        name: "small",
+        parts: WHISPER_SMALL_PARTS,
+    },
+    WhisperModelManifest {
+        name: "medium",
+        parts: WHISPER_MEDIUM_PARTS,
+    },
+];
+
+fn whisper_model_manifest(model_name: &str) -> Result<&'static WhisperModelManifest, String> {
+    WHISPER_MODEL_MANIFESTS
+        .iter()
+        .find(|manifest| manifest.name == model_name)
+        .ok_or_else(|| format!("Unknown Whisper model: {model_name}"))
+}
+
+fn whisper_model_staging_path(validated_path: &Path) -> PathBuf {
+    let filename = validated_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("model.bin");
+    validated_path.with_file_name(format!(".{filename}.downloading"))
+}
+
+fn whisper_model_file_has_ggml_header(path: &Path) -> bool {
+    let mut header = [0_u8; 4];
+    File::open(path)
+        .and_then(|mut file| file.read_exact(&mut header))
+        .is_ok_and(|_| header == *b"ggml")
+}
+
+fn whisper_model_file_matches_entry(path: &Path, manifest: WhisperModelManifest) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file()
+        || metadata.len() != manifest.total_size()
+        || !whisper_model_file_has_ggml_header(path)
+    {
+        return false;
+    }
+
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+    let mut buffer = [0_u8; 64 * 1024];
+
+    for part in manifest.parts {
+        let mut remaining = part.expected_size;
+        let mut hasher = Sha256::new();
+        while remaining > 0 {
+            let read_len = remaining.min(buffer.len() as u64) as usize;
+            let Ok(bytes_read) = file.read(&mut buffer[..read_len]) else {
+                return false;
+            };
+            if bytes_read == 0 {
+                return false;
+            }
+            hasher.update(&buffer[..bytes_read]);
+            remaining -= bytes_read as u64;
+        }
+
+        if format!("{:x}", hasher.finalize()) != part.sha256 {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Accept files produced by older Cap versions as long as they match a trusted
+/// official release manifest. Old versions did not persist a completion marker,
+/// so re-validating every part's length and SHA-256 keeps them compatible
+/// without ever accepting a partial file as a model.
+fn whisper_model_file_matches_manifest(path: &Path) -> bool {
+    WHISPER_MODEL_MANIFESTS
+        .iter()
+        .copied()
+        .any(|manifest| whisper_model_file_matches_entry(path, manifest))
+}
+
 #[tauri::command]
 #[specta::specta]
 #[instrument(skip(app))]
@@ -2067,6 +2231,10 @@ pub async fn download_whisper_model(
     model_name: String,
     output_path: String,
 ) -> Result<(), String> {
+    // This is a closed, versioned manifest rather than a best-effort URL map.
+    // The upstream release publishes SHA-256 digests for every asset, so a
+    // model is not considered downloaded until every part matches this list.
+    let model_manifest = whisper_model_manifest(&model_name)?;
     let validated_path = validate_model_path(&app, &output_path)?;
     let key = model_download_key(&validated_path);
 
@@ -2079,7 +2247,7 @@ pub async fn download_whisper_model(
     tauri::async_runtime::spawn(async move {
         let result = download_whisper_model_to_path(
             &download_app,
-            &model_name,
+            model_manifest,
             &validated_path,
             &download_key,
         )
@@ -2104,117 +2272,131 @@ pub async fn download_whisper_model(
 
 async fn download_whisper_model_to_path(
     app: &AppHandle,
-    model_name: &str,
+    model_manifest: &'static WhisperModelManifest,
     validated_path: &Path,
     download_key: &str,
 ) -> Result<(), String> {
-    let model_parts: &[&str] = match model_name {
-        "tiny" => &[
-            "https://github.com/CapSoftware/transcription-models/releases/download/whisper-v1/ggml-tiny.bin",
-        ],
-        "base" => &[
-            "https://github.com/CapSoftware/transcription-models/releases/download/whisper-v1/ggml-base.bin",
-        ],
-        "small" => &[
-            "https://github.com/CapSoftware/transcription-models/releases/download/whisper-v1/ggml-small.bin",
-        ],
-        "medium" => &[
-            "https://github.com/CapSoftware/transcription-models/releases/download/whisper-v1/ggml-medium.bin.part0",
-            "https://github.com/CapSoftware/transcription-models/releases/download/whisper-v1/ggml-medium.bin.part1",
-        ],
-        _ => &[
-            "https://github.com/CapSoftware/transcription-models/releases/download/whisper-v1/ggml-tiny.bin",
-        ],
-    };
-
     if let Some(parent) = validated_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create parent directories: {e}"))?;
     }
 
     let http_client = app.state::<http_client::HttpClient>();
-    let total_size = total_content_length(&http_client, model_parts).await;
+    let staging_path = whisper_model_staging_path(validated_path);
+    // A previous cancelled download is never a candidate model. Remove it
+    // before creating a new staging file, while leaving any completed model
+    // at `validated_path` untouched until this download is fully verified.
+    if staging_path.exists() {
+        tokio::fs::remove_file(&staging_path)
+            .await
+            .map_err(|e| format!("Failed to clean incomplete model download: {e}"))?;
+    }
 
-    let mut file = tokio::fs::File::create(&validated_path)
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staging_path)
         .await
-        .map_err(|e| format!("Failed to create file: {e}"))?;
+        .map_err(|e| format!("Failed to create temporary model file: {e}"))?;
 
     let mut downloaded: u64 = 0;
-    let part_count = model_parts.len() as f64;
+    let total_size = model_manifest.total_size();
 
-    for (idx, url) in model_parts.iter().enumerate() {
-        let response = http_client
-            .get(*url)
-            .timeout(MODEL_DOWNLOAD_REQUEST_TIMEOUT)
-            .send()
-            .await
-            .map_err(|e| format!("Failed to download model: {e}"))?;
+    let result: Result<(), String> = async {
+        for part in model_manifest.parts {
+            let response = http_client
+                .get(part.url)
+                .timeout(MODEL_DOWNLOAD_REQUEST_TIMEOUT)
+                .send()
+                .await
+                .map_err(|e| format!("Failed to download model: {e}"))?;
 
-        if !response.status().is_success() {
+            if !response.status().is_success() {
+                return Err(format!(
+                    "Failed to download model: HTTP {}",
+                    response.status()
+                ));
+            }
+
+            if let Some(content_length) = response.content_length()
+                && content_length != part.expected_size
+            {
+                return Err(format!(
+                    "Downloaded model part has unexpected length: expected {}, got {content_length}",
+                    part.expected_size
+                ));
+            }
+
+            let mut downloaded_part: u64 = 0;
+            let mut hasher = Sha256::new();
+            let mut stream = response.bytes_stream();
+            while let Some(chunk_result) = stream.next().await {
+                let chunk = chunk_result.map_err(|e| format!("Error while downloading: {e}"))?;
+
+                file.write_all(&chunk)
+                    .await
+                    .map_err(|e| format!("Error while writing temporary model file: {e}"))?;
+                hasher.update(&chunk);
+
+                downloaded = downloaded.saturating_add(chunk.len() as u64);
+                downloaded_part = downloaded_part.saturating_add(chunk.len() as u64);
+
+                let progress = (downloaded as f64 / total_size as f64) * 100.0;
+                set_model_download_progress(
+                    app,
+                    download_key,
+                    progress,
+                    format!("Downloading model: {progress:.0}%"),
+                )
+                .await;
+            }
+
+            if downloaded_part != part.expected_size {
+                return Err(format!(
+                    "Downloaded model part is incomplete: expected {} bytes, got {downloaded_part}",
+                    part.expected_size
+                ));
+            }
+
+            let digest = format!("{:x}", hasher.finalize());
+            if digest != part.sha256 {
+                return Err("Downloaded model part failed SHA-256 verification".to_string());
+            }
+        }
+
+        if downloaded != total_size {
             return Err(format!(
-                "Failed to download model: HTTP {}",
-                response.status()
+                "Downloaded model is incomplete: expected {total_size} bytes, got {downloaded}"
             ));
         }
 
-        let part_size = response.content_length().unwrap_or(0);
-        let mut downloaded_part: u64 = 0;
-        let mut stream = response.bytes_stream();
-        while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result.map_err(|e| format!("Error while downloading: {e}"))?;
-
-            file.write_all(&chunk)
-                .await
-                .map_err(|e| format!("Error while writing to file: {e}"))?;
-
-            downloaded = downloaded.saturating_add(chunk.len() as u64);
-            downloaded_part = downloaded_part.saturating_add(chunk.len() as u64);
-
-            let progress = if total_size > 0 {
-                (downloaded as f64 / total_size as f64) * 100.0
-            } else if part_size > 0 {
-                ((idx as f64 + downloaded_part as f64 / part_size as f64) / part_count) * 100.0
-            } else {
-                (idx as f64 / part_count) * 100.0
-            };
-
-            set_model_download_progress(
-                app,
-                download_key,
-                progress,
-                format!("Downloading model: {progress:.0}%"),
-            )
-            .await;
-        }
-    }
-
-    file.flush()
-        .await
-        .map_err(|e| format!("Failed to flush file: {e}"))?;
-
-    Ok(())
-}
-
-async fn total_content_length(client: &reqwest::Client, urls: &[&str]) -> u64 {
-    let mut total: u64 = 0;
-    for url in urls {
-        let Ok(resp) = client
-            .head(*url)
-            .timeout(Duration::from_secs(30))
-            .send()
+        file.flush()
             .await
-        else {
-            return 0;
-        };
-        if !resp.status().is_success() {
-            return 0;
+            .map_err(|e| format!("Failed to flush temporary model file: {e}"))?;
+        file.sync_all()
+            .await
+            .map_err(|e| format!("Failed to sync temporary model file: {e}"))?;
+        drop(file);
+
+        if !whisper_model_file_has_ggml_header(&staging_path) {
+            return Err("Downloaded model has an invalid GGML header".to_string());
         }
-        match resp.content_length() {
-            Some(size) => total = total.saturating_add(size),
-            None => return 0,
-        }
+
+        // `rename` atomically replaces the final file on the supported desktop
+        // platforms. The completed path is therefore never an interrupted file.
+        tokio::fs::rename(&staging_path, validated_path)
+            .await
+            .map_err(|e| format!("Failed to atomically install model: {e}"))?;
+
+        Ok(())
     }
-    total
+    .await;
+
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&staging_path).await;
+    }
+
+    result
 }
 
 #[tauri::command]
@@ -2222,7 +2404,9 @@ async fn total_content_length(client: &reqwest::Client, urls: &[&str]) -> u64 {
 #[instrument(skip(app))]
 pub async fn check_model_exists(app: AppHandle, model_path: String) -> Result<bool, String> {
     let validated_path = validate_model_path(&app, &model_path)?;
-    Ok(validated_path.exists())
+    tokio::task::spawn_blocking(move || whisper_model_file_matches_manifest(&validated_path))
+        .await
+        .map_err(|e| format!("Failed to validate model file: {e}"))
 }
 
 #[tauri::command]
@@ -2240,6 +2424,11 @@ pub async fn delete_whisper_model(app: AppHandle, model_path: String) -> Result<
     tokio::fs::remove_file(&validated_path)
         .await
         .map_err(|e| format!("Failed to delete model file: {e}"))?;
+
+    let staging_path = whisper_model_staging_path(&validated_path);
+    if staging_path.exists() {
+        let _ = tokio::fs::remove_file(staging_path).await;
+    }
 
     Ok(())
 }
@@ -2728,9 +2917,13 @@ fn mix_samples(dest: &mut [f32], source: &[f32]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        AudioExtractionSource, CaptionWord, caption_text_from_words, caption_word_chunks,
-        normalize_caption_words, resolve_audio_extraction_source, resolve_path_with_base,
+        AudioExtractionSource, CaptionWord, WhisperModelManifest, WhisperModelPart,
+        caption_text_from_words, caption_word_chunks, normalize_caption_words, parse_captions_json,
+        resolve_audio_extraction_source, resolve_path_with_base, whisper_model_file_matches_entry,
+        whisper_model_file_matches_manifest, whisper_model_manifest, whisper_model_staging_path,
     };
+    use std::io::Write;
+    use std::path::Path;
     use tempfile::tempdir;
 
     fn word(text: &str, index: usize) -> CaptionWord {
@@ -2771,6 +2964,65 @@ mod tests {
         let resolved = resolve_path_with_base(&base, target.to_string_lossy().as_ref()).unwrap();
 
         assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn whisper_model_manifest_rejects_unknown_model_names() {
+        let error = whisper_model_manifest("not-a-whisper-model").unwrap_err();
+
+        assert_eq!(error, "Unknown Whisper model: not-a-whisper-model");
+    }
+
+    #[test]
+    fn whisper_model_staging_file_is_never_the_completed_model_path() {
+        let target = Path::new("/tmp/transcription_models/small.bin");
+
+        assert_eq!(
+            whisper_model_staging_path(target),
+            Path::new("/tmp/transcription_models/.small.bin.downloading")
+        );
+    }
+
+    #[test]
+    fn incomplete_whisper_file_is_not_treated_as_downloaded() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("small.bin");
+        std::fs::write(&path, b"ggml-interrupted-download").unwrap();
+
+        assert!(!whisper_model_file_matches_manifest(&path));
+    }
+
+    #[test]
+    fn complete_model_file_must_match_the_manifest_checksum() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("fixture.bin");
+        let parts = [WhisperModelPart {
+            url: "https://example.invalid/fixture.bin",
+            expected_size: 4,
+            sha256: "20dacd925aeceadc9a0aa77d7869bd4904efd399b3571b5c464d13191adadccb",
+        }];
+        let manifest = WhisperModelManifest {
+            name: "fixture",
+            parts: &parts,
+        };
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(b"ggml").unwrap();
+        drop(file);
+
+        assert!(whisper_model_file_matches_entry(&path, manifest));
+    }
+
+    #[test]
+    fn known_size_and_header_without_matching_checksum_is_not_treated_as_downloaded() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("small.bin");
+        let expected_size = whisper_model_manifest("small").unwrap().total_size();
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(b"ggml").unwrap();
+        file.set_len(expected_size).unwrap();
+        drop(file);
+
+        assert!(!whisper_model_file_matches_manifest(&path));
     }
 
     #[test]
@@ -2838,6 +3090,16 @@ mod tests {
 
         assert_eq!(words.len(), 1);
         assert!((words[0].end - (53.92 + super::MAX_CAPTION_WORD_DURATION)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn captions_json_preserves_opt_in_word_animation_and_defaults_legacy_projects() {
+        let enabled =
+            parse_captions_json(r#"{"segments":[],"settings":{"wordAnimation":true}}"#).unwrap();
+        let legacy = parse_captions_json(r#"{"segments":[],"settings":{}}"#).unwrap();
+
+        assert!(enabled.settings.word_animation);
+        assert!(!legacy.settings.word_animation);
     }
 
     #[test]

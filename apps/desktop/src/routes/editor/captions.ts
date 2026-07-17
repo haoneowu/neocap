@@ -15,8 +15,10 @@ import { getCaptionTextFromWords } from "./caption-text";
 
 export { getCaptionTextFromWords } from "./caption-text";
 export {
+	normalizeCaptionWordTimings,
 	syncCaptionWordsWithText,
 	tokenizeCaptionText,
+	updateCaptionWordTiming,
 } from "./caption-word-editing";
 export { segmentCaptionsForShortForm } from "./short-form-captions";
 export const DEFAULT_WHISPER_CAPTION_MODEL = "small";

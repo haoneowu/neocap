@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { syncCaptionWordsWithText } from "./caption-word-editing";
+import {
+	normalizeCaptionWordTimings,
+	syncCaptionWordsWithText,
+	updateCaptionWordTiming,
+} from "./caption-word-editing";
 
 describe("syncCaptionWordsWithText", () => {
 	it("preserves Chinese word-level timing when a no-space caption is edited", () => {
@@ -37,6 +41,50 @@ describe("syncCaptionWordsWithText", () => {
 			expect(words[index - 1]?.end).toBeLessThanOrEqual(
 				words[index]?.start ?? Number.POSITIVE_INFINITY,
 			);
+		}
+	});
+
+	it("keeps direct timing edits inside phrase bounds and away from neighbours", () => {
+		const words = [
+			{ text: "我", start: 10, end: 10.5 },
+			{ text: "们", start: 10.5, end: 11 },
+			{ text: "走", start: 11, end: 11.5 },
+		];
+
+		const startEdited = updateCaptionWordTiming(words, 1, { start: 8 }, 10, 12);
+		expect(startEdited[1]?.start).toBe(10.5);
+
+		const endEdited = updateCaptionWordTiming(
+			startEdited,
+			1,
+			{ end: 99 },
+			10,
+			12,
+		);
+		expect(endEdited[1]?.end).toBe(11);
+		expect(endEdited[0]?.end).toBeLessThanOrEqual(endEdited[1]?.start ?? 0);
+		expect(endEdited[1]?.end).toBeLessThanOrEqual(endEdited[2]?.start ?? 0);
+	});
+
+	it("normalizes malformed imported timings before they are persisted", () => {
+		const words = normalizeCaptionWordTimings(
+			[
+				{ text: "一", start: 8, end: 11 },
+				{ text: "二", start: 9, end: 9.1 },
+			],
+			10,
+			12,
+		);
+
+		expect(words[0]?.start).toBeGreaterThanOrEqual(10);
+		expect(words.at(-1)?.end).toBeLessThanOrEqual(12);
+		for (let index = 0; index < words.length; index++) {
+			expect(words[index]?.end).toBeGreaterThan(words[index]?.start ?? 0);
+			if (index > 0) {
+				expect(words[index - 1]?.end).toBeLessThanOrEqual(
+					words[index]?.start ?? 0,
+				);
+			}
 		}
 	});
 });

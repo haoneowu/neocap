@@ -3,8 +3,9 @@ use cap_project::XY;
 use std::sync::Arc;
 
 use crate::{
-    DecodedSegmentFrames, PixelFormat,
+    DecodedSegmentFrames, MaskRenderMode, PixelFormat, PreparedMask,
     composite_frame::{CompositeVideoFramePipeline, CompositeVideoFrameUniforms},
+    layers::mask::MaskLayer,
     yuv_converter::{YuvConverterPipelines, YuvToRgbaConverter},
 };
 
@@ -922,6 +923,52 @@ impl DisplayLayer {
                 depth_or_array_layers: 1,
             },
         );
+    }
+
+    /// Applies source-content masks to the decoded display texture before the
+    /// composite shader reads it. This is deliberately separate from the
+    /// final-output mask pass: `crop_bounds` / zoom / split transformations
+    /// happen only later in `render`.
+    pub fn apply_source_masks(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        mask_layer: &MaskLayer,
+        masks: &[PreparedMask],
+    ) {
+        if !self.has_valid_frame {
+            return;
+        }
+
+        for mask in masks {
+            let current = self.current_texture;
+            let other = 1 - current;
+
+            match mask.mode {
+                // The two blur passes may write back to the current source
+                // texture because the vertical pass reads the completed
+                // scratch texture, not the original source.
+                MaskRenderMode::Blur => mask_layer.render_source_texture(
+                    device,
+                    encoder,
+                    &self.frame_texture_views[current],
+                    &self.frame_texture_views[other],
+                    &self.frame_texture_views[current],
+                    mask,
+                ),
+                MaskRenderMode::Pixelate | MaskRenderMode::Highlight => {
+                    mask_layer.render_source_texture(
+                        device,
+                        encoder,
+                        &self.frame_texture_views[current],
+                        &self.frame_texture_views[other],
+                        &self.frame_texture_views[other],
+                        mask,
+                    );
+                    self.current_texture = other;
+                }
+            }
+        }
     }
 
     pub fn render(&self, pass: &mut wgpu::RenderPass<'_>) {

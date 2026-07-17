@@ -2961,6 +2961,8 @@ struct EditorStateChanged {
 pub(crate) struct FrameLayoutEvent {
     display: [f32; 4],
     display_content: [f32; 4],
+    display_crop_bounds: [f32; 4],
+    display_frame_size: [f32; 2],
     camera: Option<[f32; 4]>,
     output_width: u32,
     output_height: u32,
@@ -2971,6 +2973,8 @@ impl From<cap_editor::FrameLayout> for FrameLayoutEvent {
         Self {
             display: layout.display,
             display_content: layout.display_content,
+            display_crop_bounds: layout.display_crop_bounds,
+            display_frame_size: layout.display_frame_size,
             camera: layout.camera,
             output_width: layout.output_size[0],
             output_height: layout.output_size[1],
@@ -4957,7 +4961,6 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
             destroy_camera_window,
             refresh_camera_feed,
             captions::create_dir,
-            captions::save_model_file,
             captions::transcribe_audio,
             captions::save_captions,
             captions::load_captions,

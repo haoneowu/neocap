@@ -130,25 +130,33 @@ export const getMaskCoordinateTransform = (
 	}
 
 	const [left, top, right, bottom] = layout.display_content;
-	const width = Math.max(0, right - left);
-	const height = Math.max(0, bottom - top);
+	const contentWidth = Math.max(0, right - left);
+	const contentHeight = Math.max(0, bottom - top);
+	const [cropLeft, cropTop, cropRight, cropBottom] = layout.display_crop_bounds;
+	const [frameWidth, frameHeight] = layout.display_frame_size;
+	const cropWidth = Math.max(0, cropRight - cropLeft);
+	const cropHeight = Math.max(0, cropBottom - cropTop);
 	if (
 		layout.output_width <= 0 ||
 		layout.output_height <= 0 ||
-		!width ||
-		!height
+		!contentWidth ||
+		!contentHeight ||
+		!cropWidth ||
+		!cropHeight ||
+		frameWidth <= 0 ||
+		frameHeight <= 0
 	) {
 		return { origin: { x: 0, y: 0 }, scale: { x: 1, y: 1 } };
 	}
 
 	return {
 		origin: {
-			x: left / layout.output_width,
-			y: top / layout.output_height,
+			x: (left - (cropLeft / cropWidth) * contentWidth) / layout.output_width,
+			y: (top - (cropTop / cropHeight) * contentHeight) / layout.output_height,
 		},
 		scale: {
-			x: width / layout.output_width,
-			y: height / layout.output_height,
+			x: (contentWidth * frameWidth) / (cropWidth * layout.output_width),
+			y: (contentHeight * frameHeight) / (cropHeight * layout.output_height),
 		},
 	};
 };

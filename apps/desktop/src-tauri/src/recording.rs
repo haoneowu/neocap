@@ -4,10 +4,10 @@ use cap_media_info::ffmpeg_sample_format_for;
 use cap_project::CursorMoveEvent;
 use cap_project::cursor::SHORT_CURSOR_SHAPE_DEBOUNCE_MS;
 use cap_project::{
-    CameraShape, CursorClickEvent, GlideDirection, InstantRecordingMeta, MultipleSegments,
-    Platform, ProjectConfiguration, RecordingMeta, RecordingMetaInner, SharingMeta,
-    StudioRecordingMeta, StudioRecordingStatus, TimelineConfiguration, TimelineSegment, ZoomMode,
-    ZoomSegment, cursor::CursorEvents,
+    CameraShape, CursorClickEvent, InstantRecordingMeta, MultipleSegments, Platform,
+    ProjectConfiguration, RecordingMeta, RecordingMetaInner, SharingMeta, StudioRecordingMeta,
+    StudioRecordingStatus, TimelineConfiguration, TimelineSegment, ZoomSegment,
+    cursor::{CursorEvents, generate_auto_zoom_segments},
 };
 #[cfg(target_os = "macos")]
 use cap_recording::SendableShareableContent;
@@ -3649,81 +3649,11 @@ async fn finalize_studio_recording(
 }
 
 fn generate_zoom_segments_from_clicks_impl(
-    mut clicks: Vec<CursorClickEvent>,
+    clicks: Vec<CursorClickEvent>,
     _moves: Vec<CursorMoveEvent>,
     max_duration: f64,
 ) -> Vec<ZoomSegment> {
-    const MS_PER_SECOND: f64 = 1000.0;
-    const START_MIN_MS: f64 = 1.0;
-    const CLICK_PRE_PADDING_MS: f64 = 300.0;
-    const CLICK_POST_PADDING_MS: f64 = 2500.0;
-    const CLICK_END_CLAMP_PADDING_MS: f64 = 800.0;
-    const TRAILING_CLICK_IGNORE_MS: f64 = 1000.0;
-    const MERGE_GAP_MS: f64 = 2500.0;
-    const AUTO_ZOOM_AMOUNT: f64 = 2.0;
-
-    if max_duration <= 0.0 {
-        return Vec::new();
-    }
-
-    let duration_ms = max_duration * MS_PER_SECOND;
-    let click_cutoff_ms = duration_ms - TRAILING_CLICK_IGNORE_MS;
-    let end_limit_ms = duration_ms - CLICK_END_CLAMP_PADDING_MS;
-    if click_cutoff_ms <= 0.0 || end_limit_ms <= START_MIN_MS {
-        return Vec::new();
-    }
-
-    clicks.sort_by(|a, b| {
-        a.time_ms
-            .partial_cmp(&b.time_ms)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    let mut intervals: Vec<(f64, f64)> = Vec::new();
-    for click in clicks {
-        let time_ms = click.time_ms.floor();
-        if time_ms >= click_cutoff_ms {
-            continue;
-        }
-
-        let start = (time_ms - CLICK_PRE_PADDING_MS).max(START_MIN_MS);
-        let end = (time_ms + CLICK_POST_PADDING_MS).min(end_limit_ms);
-
-        if end > start {
-            intervals.push((start, end));
-        }
-    }
-
-    if intervals.is_empty() {
-        return Vec::new();
-    }
-
-    intervals.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-
-    let mut merged: Vec<(f64, f64)> = Vec::new();
-    for interval in intervals {
-        if let Some(last) = merged.last_mut()
-            && interval.0 <= last.1 + MERGE_GAP_MS
-        {
-            last.1 = last.1.max(interval.1);
-            continue;
-        }
-        merged.push(interval);
-    }
-
-    merged
-        .into_iter()
-        .map(|(start, end)| ZoomSegment {
-            start: start.round() / MS_PER_SECOND,
-            end: end.round() / MS_PER_SECOND,
-            amount: AUTO_ZOOM_AMOUNT,
-            mode: ZoomMode::Auto,
-            glide_direction: GlideDirection::None,
-            glide_speed: 0.5,
-            instant_animation: false,
-            edge_snap_ratio: 0.25,
-        })
-        .collect()
+    generate_auto_zoom_segments(clicks, max_duration)
 }
 
 /// Generates zoom segments based on mouse click events during recording.
@@ -3756,8 +3686,6 @@ pub fn generate_zoom_segments_for_project(
     };
 
     let mut all_clicks = Vec::new();
-    let mut all_moves = Vec::new();
-
     match &**studio_meta {
         StudioRecordingMeta::SingleSegment { segment } => {
             if let Some(cursor_path) = &segment.cursor {
@@ -3770,19 +3698,33 @@ pub fn generate_zoom_segments_for_project(
                     SHORT_CURSOR_SHAPE_DEBOUNCE_MS,
                 );
                 all_clicks = events.clicks;
-                all_moves = events.moves;
             }
         }
         StudioRecordingMeta::MultipleSegments { inner, .. } => {
-            for segment in inner.segments.iter() {
-                let events = segment.cursor_events(recording_meta);
+            if recordings.segments.len() != inner.segments.len() {
+                warn!(
+                    cursor_segments = inner.segments.len(),
+                    recording_segments = recordings.segments.len(),
+                    "Skipping auto zoom generation because cursor and media segment counts differ"
+                );
+                return Vec::new();
+            }
+
+            let mut timeline_offset_ms = 0.0;
+            for (index, segment) in inner.segments.iter().enumerate() {
+                let mut events = segment.cursor_events(recording_meta);
+                // Cursor `time_ms` is local to one captured segment. Project
+                // playback concatenates those media segments, so translate it
+                // by the actual preceding media durations, not wall-clock
+                // metadata (which includes pauses).
+                events.offset_timeline_time_ms(timeline_offset_ms);
                 all_clicks.extend(events.clicks);
-                all_moves.extend(events.moves);
+                timeline_offset_ms += recordings.segments[index].duration() * 1000.0;
             }
         }
     }
 
-    generate_zoom_segments_from_clicks_impl(all_clicks, all_moves, recordings.duration())
+    generate_zoom_segments_from_clicks_impl(all_clicks, Vec::new(), recordings.duration())
 }
 
 fn project_config_from_recording(

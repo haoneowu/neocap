@@ -15,6 +15,7 @@ export type EditorCaptionSettings = CaptionSettings & {
 	animation?: CaptionAnimation;
 	highlightStyle?: CaptionHighlightStyle;
 	uppercase?: boolean;
+	wordAnimation?: boolean;
 };
 
 export type CaptionsState = {
@@ -44,6 +45,7 @@ export type CaptionPresetStyle = {
 	outlineColor: string;
 	highlightColor: string;
 	activeWordHighlight: boolean;
+	wordAnimation?: boolean;
 	highlightStyle: CaptionHighlightStyle;
 	animation: CaptionAnimation;
 	uppercase: boolean;
@@ -201,6 +203,7 @@ export const CAPTION_STYLE_PRESETS: CaptionStylePreset[] = [
 			outlineColor: "#111111",
 			highlightColor: "#FFD400",
 			activeWordHighlight: true,
+			wordAnimation: true,
 			highlightStyle: "color",
 			animation: "pop",
 			uppercase: false,
@@ -250,6 +253,7 @@ export const defaultCaptionSettings: EditorCaptionSettings = {
 	exportWithSubtitles: false,
 	lingerDuration: 0.4,
 	wordTransitionDuration: 0.25,
+	wordAnimation: false,
 	manualPosition: null,
 	preset: classicPreset.id,
 	...classicPreset.style,
@@ -398,6 +402,7 @@ function createCaptionsStore() {
 						lingerDuration: state.settings.lingerDuration,
 						wordTransitionDuration: state.settings.wordTransitionDuration,
 						activeWordHighlight: state.settings.activeWordHighlight,
+						wordAnimation: state.settings.wordAnimation,
 						manualPosition: state.settings.manualPosition,
 						preset: state.settings.preset,
 						animation: state.settings.animation,

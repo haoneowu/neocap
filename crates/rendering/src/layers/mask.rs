@@ -79,6 +79,62 @@ impl MaskLayer {
         }
     }
 
+    /// Applies a mask to an arbitrary source texture pair. Display-layer
+    /// privacy masks use this path before the source texture is cropped or
+    /// composed into the output canvas.
+    pub fn render_source_texture(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        source_texture_view: &wgpu::TextureView,
+        scratch_texture_view: &wgpu::TextureView,
+        target_texture_view: &wgpu::TextureView,
+        mask: &PreparedMask,
+    ) {
+        match mask.mode {
+            MaskRenderMode::Blur => {
+                self.render_pass(
+                    device,
+                    encoder,
+                    MaskPass {
+                        source_texture_view,
+                        target_texture_view: scratch_texture_view,
+                        render_pipeline: &self.pipeline.render_pipeline,
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        uniforms: MaskUniforms::from_mask(mask, BLUR_HORIZONTAL_MODE),
+                    },
+                );
+                self.render_pass(
+                    device,
+                    encoder,
+                    MaskPass {
+                        source_texture_view: scratch_texture_view,
+                        target_texture_view,
+                        render_pipeline: &self.pipeline.blur_composite_pipeline,
+                        load: wgpu::LoadOp::Load,
+                        uniforms: MaskUniforms::from_mask(mask, BLUR_VERTICAL_MODE),
+                    },
+                );
+            }
+            MaskRenderMode::Pixelate => self.render_texture_pass(
+                device,
+                encoder,
+                source_texture_view,
+                target_texture_view,
+                mask,
+                PIXELATE_MODE,
+            ),
+            MaskRenderMode::Highlight => self.render_texture_pass(
+                device,
+                encoder,
+                source_texture_view,
+                target_texture_view,
+                mask,
+                HIGHLIGHT_MODE,
+            ),
+        }
+    }
+
     fn render_single_pass(
         &self,
         device: &wgpu::Device,
@@ -99,6 +155,28 @@ impl MaskLayer {
             },
         );
         session.swap_textures();
+    }
+
+    fn render_texture_pass(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        source_texture_view: &wgpu::TextureView,
+        target_texture_view: &wgpu::TextureView,
+        mask: &PreparedMask,
+        mode: u32,
+    ) {
+        self.render_pass(
+            device,
+            encoder,
+            MaskPass {
+                source_texture_view,
+                target_texture_view,
+                render_pipeline: &self.pipeline.render_pipeline,
+                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                uniforms: MaskUniforms::from_mask(mask, mode),
+            },
+        );
     }
 
     fn render_pass(

@@ -7,7 +7,19 @@ pub const SHORT_CURSOR_SHAPE_DEBOUNCE_MS: f64 = 1000.0;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use crate::XY;
+use crate::{GlideDirection, XY, ZoomMode, ZoomSegment};
+
+const MS_PER_SECOND: f64 = 1000.0;
+const AUTO_ZOOM_START_MIN_MS: f64 = 1.0;
+const AUTO_ZOOM_CLICK_PRE_PADDING_MS: f64 = 300.0;
+const AUTO_ZOOM_CLICK_POST_PADDING_MS: f64 = 2500.0;
+const AUTO_ZOOM_CLICK_END_CLAMP_PADDING_MS: f64 = 800.0;
+const AUTO_ZOOM_TRAILING_CLICK_IGNORE_MS: f64 = 1000.0;
+const AUTO_ZOOM_MERGE_GAP_MS: f64 = 2500.0;
+/// Prevents double-clicks and click bounce from producing repeated automatic
+/// framing proposals. Manual zooms remain independently editable.
+pub const AUTO_ZOOM_CLICK_COOLDOWN_MS: f64 = 700.0;
+const AUTO_ZOOM_AMOUNT: f64 = 2.0;
 
 #[derive(Serialize, Deserialize, Clone, Type, Debug, PartialEq)]
 pub struct CursorMoveEvent {
@@ -24,24 +36,25 @@ pub struct CursorMoveEvent {
 }
 
 impl CursorMoveEvent {
-    /// Returns the recording-session timestamp used by rendering. New files
-    /// carry an integer microsecond value from the session anchor; old files
-    /// retain their original floating-point milliseconds.
-    pub fn resolved_time_ms(&self) -> f64 {
-        self.session_time_us
-            .map(|time_us| time_us as f64 / 1_000.0)
-            .unwrap_or(self.time_ms)
+    /// Returns the persisted, monotonic whole-session timestamp when available.
+    ///
+    /// `time_ms` deliberately remains this segment's media time: multi-segment
+    /// renderers select cursor data per segment, so replacing it with the
+    /// session clock would make resumed recordings render at the wrong time.
+    pub fn session_time_ms(&self) -> Option<f64> {
+        self.session_time_us.map(|time_us| time_us as f64 / 1_000.0)
     }
 
-    fn normalize_session_time(&mut self) {
-        self.time_ms = self.resolved_time_ms();
+    /// Returns the segment-media timestamp consumed by legacy render/export
+    /// paths. Kept for callers that previously used this helper.
+    pub fn resolved_time_ms(&self) -> f64 {
+        self.time_ms
     }
 }
 
 impl PartialOrd for CursorMoveEvent {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.resolved_time_ms()
-            .partial_cmp(&other.resolved_time_ms())
+        self.time_ms.partial_cmp(&other.time_ms)
     }
 }
 
@@ -58,22 +71,20 @@ pub struct CursorClickEvent {
 }
 
 impl CursorClickEvent {
-    /// See [`CursorMoveEvent::resolved_time_ms`].
-    pub fn resolved_time_ms(&self) -> f64 {
-        self.session_time_us
-            .map(|time_us| time_us as f64 / 1_000.0)
-            .unwrap_or(self.time_ms)
+    /// See [`CursorMoveEvent::session_time_ms`].
+    pub fn session_time_ms(&self) -> Option<f64> {
+        self.session_time_us.map(|time_us| time_us as f64 / 1_000.0)
     }
 
-    fn normalize_session_time(&mut self) {
-        self.time_ms = self.resolved_time_ms();
+    /// See [`CursorMoveEvent::resolved_time_ms`].
+    pub fn resolved_time_ms(&self) -> f64 {
+        self.time_ms
     }
 }
 
 impl PartialOrd for CursorClickEvent {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.resolved_time_ms()
-            .partial_cmp(&other.resolved_time_ms())
+        self.time_ms.partial_cmp(&other.time_ms)
     }
 }
 
@@ -97,19 +108,7 @@ pub struct CursorData {
 impl CursorData {
     pub fn load_from_file(path: &Path) -> Result<Self, String> {
         let file = File::open(path).map_err(|e| format!("Failed to open cursor file: {e}"))?;
-        let mut cursor_data: Self = serde_json::from_reader(file)
-            .map_err(|e| format!("Failed to parse cursor data: {e}"))?;
-        cursor_data.normalize_session_times();
-        Ok(cursor_data)
-    }
-
-    fn normalize_session_times(&mut self) {
-        for event in &mut self.moves {
-            event.normalize_session_time();
-        }
-        for event in &mut self.clicks {
-            event.normalize_session_time();
-        }
+        serde_json::from_reader(file).map_err(|e| format!("Failed to parse cursor data: {e}"))
     }
 }
 
@@ -122,22 +121,21 @@ pub struct CursorEvents {
 impl CursorEvents {
     pub fn load_from_file(path: &Path) -> Result<Self, String> {
         let file = File::open(path).map_err(|e| format!("Failed to open cursor file: {e}"))?;
-        let mut cursor_events: Self = serde_json::from_reader(file)
-            .map_err(|e| format!("Failed to parse cursor data: {e}"))?;
-        cursor_events.normalize_session_times();
-        Ok(cursor_events)
+        serde_json::from_reader(file).map_err(|e| format!("Failed to parse cursor data: {e}"))
     }
 
-    /// Converts new persisted session-clock fields into the legacy millisecond
-    /// field consumed by existing render and export paths. This keeps the
-    /// migration boundary at IO rather than making every renderer branch on
-    /// project schema age.
-    pub fn normalize_session_times(&mut self) {
+    /// Moves segment-local events onto a concatenated project-media timeline.
+    /// The session clock is intentionally left untouched as audit telemetry.
+    pub fn offset_timeline_time_ms(&mut self, offset_ms: f64) {
+        if !offset_ms.is_finite() {
+            return;
+        }
+
         for event in &mut self.moves {
-            event.normalize_session_time();
+            event.time_ms += offset_ms;
         }
         for event in &mut self.clicks {
-            event.normalize_session_time();
+            event.time_ms += offset_ms;
         }
     }
 
@@ -323,6 +321,79 @@ impl CursorEvents {
     }
 }
 
+/// Generates deterministic, editable automatic zoom proposals from cursor
+/// telemetry that has already been mapped onto project-media time.
+///
+/// Only primary-button down events are candidates. A 700 ms cooldown filters
+/// double-click bounce before overlapping proposal intervals are merged.
+pub fn generate_auto_zoom_segments(
+    mut clicks: Vec<CursorClickEvent>,
+    max_duration: f64,
+) -> Vec<ZoomSegment> {
+    if max_duration <= 0.0 {
+        return Vec::new();
+    }
+
+    let duration_ms = max_duration * MS_PER_SECOND;
+    let click_cutoff_ms = duration_ms - AUTO_ZOOM_TRAILING_CLICK_IGNORE_MS;
+    let end_limit_ms = duration_ms - AUTO_ZOOM_CLICK_END_CLAMP_PADDING_MS;
+    if click_cutoff_ms <= 0.0 || end_limit_ms <= AUTO_ZOOM_START_MIN_MS {
+        return Vec::new();
+    }
+
+    clicks.retain(|click| click.cursor_num == 0 && click.down && click.time_ms.is_finite());
+    clicks.sort_by(|a, b| {
+        a.time_ms
+            .partial_cmp(&b.time_ms)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut intervals: Vec<(f64, f64)> = Vec::new();
+    let mut last_candidate_ms: Option<f64> = None;
+    for click in clicks {
+        let time_ms = click.time_ms.floor();
+        if time_ms >= click_cutoff_ms {
+            continue;
+        }
+        if last_candidate_ms.is_some_and(|last| time_ms - last < AUTO_ZOOM_CLICK_COOLDOWN_MS) {
+            continue;
+        }
+        last_candidate_ms = Some(time_ms);
+
+        let start = (time_ms - AUTO_ZOOM_CLICK_PRE_PADDING_MS).max(AUTO_ZOOM_START_MIN_MS);
+        let end = (time_ms + AUTO_ZOOM_CLICK_POST_PADDING_MS).min(end_limit_ms);
+
+        if end > start {
+            intervals.push((start, end));
+        }
+    }
+
+    let mut merged: Vec<(f64, f64)> = Vec::new();
+    for interval in intervals {
+        if let Some(last) = merged.last_mut()
+            && interval.0 <= last.1 + AUTO_ZOOM_MERGE_GAP_MS
+        {
+            last.1 = last.1.max(interval.1);
+            continue;
+        }
+        merged.push(interval);
+    }
+
+    merged
+        .into_iter()
+        .map(|(start, end)| ZoomSegment {
+            start: start.round() / MS_PER_SECOND,
+            end: end.round() / MS_PER_SECOND,
+            amount: AUTO_ZOOM_AMOUNT,
+            mode: ZoomMode::Auto,
+            glide_direction: GlideDirection::None,
+            glide_speed: 0.5,
+            instant_animation: false,
+            edge_snap_ratio: 0.25,
+        })
+        .collect()
+}
+
 impl From<CursorData> for CursorEvents {
     fn from(value: CursorData) -> Self {
         Self {
@@ -489,7 +560,7 @@ mod tests {
     }
 
     #[test]
-    fn session_clock_is_normalized_when_events_are_loaded() {
+    fn session_clock_load_keeps_segment_media_time() {
         let mut move_event = move_event(9.0, "pointer");
         move_event.session_time_us = Some(42_250);
         let mut click_event = click_event(8.0, "pointer");
@@ -508,9 +579,68 @@ mod tests {
 
         let events = CursorEvents::load_from_file(&path).expect("cursor events load");
 
-        assert_eq!(events.moves[0].time_ms, 42.25);
-        assert_eq!(events.clicks[0].time_ms, 42.5);
-        assert_eq!(events.moves[0].resolved_time_ms(), 42.25);
-        assert_eq!(events.clicks[0].resolved_time_ms(), 42.5);
+        assert_eq!(events.moves[0].time_ms, 9.0);
+        assert_eq!(events.clicks[0].time_ms, 8.0);
+        assert_eq!(events.moves[0].resolved_time_ms(), 9.0);
+        assert_eq!(events.clicks[0].resolved_time_ms(), 8.0);
+        assert_eq!(events.moves[0].session_time_ms(), Some(42.25));
+        assert_eq!(events.clicks[0].session_time_ms(), Some(42.5));
+    }
+
+    #[test]
+    fn timeline_offset_preserves_session_clock_and_separates_segments() {
+        let mut first = CursorEvents {
+            moves: vec![],
+            clicks: vec![click_event(1_000.0, "pointer")],
+        };
+        first.clicks[0].session_time_us = Some(1_000_000);
+
+        let mut second = CursorEvents {
+            moves: vec![],
+            clicks: vec![click_event(1_500.0, "pointer")],
+        };
+        second.clicks[0].session_time_us = Some(9_500_000);
+        second.offset_timeline_time_ms(5_000.0);
+
+        assert_eq!(second.clicks[0].time_ms, 6_500.0);
+        assert_eq!(second.clicks[0].session_time_us, Some(9_500_000));
+
+        first.clicks.extend(second.clicks);
+        let zooms = generate_auto_zoom_segments(first.clicks, 12.0);
+
+        assert_eq!(zooms.len(), 2);
+        assert_eq!((zooms[0].start, zooms[0].end), (0.7, 3.5));
+        assert_eq!((zooms[1].start, zooms[1].end), (6.2, 9.0));
+        assert!(zooms.windows(2).all(|pair| pair[0].end <= pair[1].start));
+    }
+
+    #[test]
+    fn auto_zoom_accepts_only_primary_button_down_events() {
+        let mut secondary = click_event(1_800.0, "pointer");
+        secondary.cursor_num = 1;
+        let mut primary_up = click_event(2_600.0, "pointer");
+        primary_up.down = false;
+
+        let zooms = generate_auto_zoom_segments(
+            vec![secondary, primary_up, click_event(1_000.0, "pointer")],
+            12.0,
+        );
+
+        assert_eq!(zooms.len(), 1);
+        assert_eq!((zooms[0].start, zooms[0].end), (0.7, 3.5));
+    }
+
+    #[test]
+    fn auto_zoom_enforces_seven_hundred_ms_cooldown() {
+        let zooms = generate_auto_zoom_segments(
+            vec![
+                click_event(1_000.0, "pointer"),
+                click_event(1_600.0, "pointer"),
+            ],
+            12.0,
+        );
+
+        assert_eq!(zooms.len(), 1);
+        assert_eq!((zooms[0].start, zooms[0].end), (0.7, 3.5));
     }
 }

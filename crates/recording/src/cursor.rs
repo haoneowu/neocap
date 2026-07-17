@@ -212,7 +212,8 @@ pub fn spawn_cursor_recorder(
     cursors_dir: PathBuf,
     prev_cursors: Cursors,
     next_cursor_id: u32,
-    start_time: Timestamps,
+    segment_start_time: Timestamps,
+    session_start_time: Timestamps,
     incremental_outputs: IncrementalCaptureOutputs,
 ) -> CursorActor {
     #[cfg(target_os = "linux")]
@@ -276,9 +277,16 @@ pub fn spawn_cursor_recorder(
                 break;
             }
 
-            let elapsed_duration = start_time.instant().elapsed();
+            // Renderers consume `time_ms` per media segment, while
+            // `session_time_us` remains monotonic across pause/resume
+            // boundaries for cross-segment audit and timeline generation.
+            let elapsed_duration = segment_start_time.instant().elapsed();
             let elapsed = elapsed_duration.as_secs_f64() * 1000.0;
-            let session_time_us = elapsed_duration.as_micros().min(u128::from(u64::MAX)) as u64;
+            let session_time_us = session_start_time
+                .instant()
+                .elapsed()
+                .as_micros()
+                .min(u128::from(u64::MAX)) as u64;
             let mouse_state = device_state.get_mouse();
 
             let position = cap_cursor_capture::RawCursorPosition::get();
