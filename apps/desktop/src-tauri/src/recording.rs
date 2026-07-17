@@ -4148,6 +4148,7 @@ mod tests {
             active_modifiers: vec![],
             cursor_num: 0,
             cursor_id: "default".to_string(),
+            session_time_us: None,
             time_ms,
             down,
         }
@@ -4165,6 +4166,7 @@ mod tests {
         CursorMoveEvent {
             active_modifiers: vec![],
             cursor_id: "default".to_string(),
+            session_time_us: None,
             time_ms,
             x,
             y,

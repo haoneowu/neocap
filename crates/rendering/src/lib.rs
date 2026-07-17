@@ -5173,6 +5173,7 @@ mod project_uniforms_tests {
         CursorMoveEvent {
             active_modifiers: vec![],
             cursor_id: "primary".to_string(),
+            session_time_us: None,
             time_ms,
             x,
             y,

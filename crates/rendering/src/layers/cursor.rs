@@ -940,6 +940,7 @@ mod tests {
         CursorMoveEvent {
             active_modifiers: vec![],
             cursor_id: "pointer".into(),
+            session_time_us: None,
             time_ms,
             x,
             y,

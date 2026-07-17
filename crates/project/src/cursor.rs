@@ -13,6 +13,11 @@ use crate::XY;
 pub struct CursorMoveEvent {
     pub active_modifiers: Vec<String>,
     pub cursor_id: String,
+    /// Monotonic time from the recording session anchor, when captured by a
+    /// newer recorder. `time_ms` remains the rendering-compatible fallback for
+    /// legacy projects that do not have this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_time_us: Option<u64>,
     pub time_ms: f64,
     pub x: f64,
     pub y: f64,
@@ -29,6 +34,9 @@ pub struct CursorClickEvent {
     pub active_modifiers: Vec<String>,
     pub cursor_num: u8,
     pub cursor_id: String,
+    /// See `CursorMoveEvent::session_time_us`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_time_us: Option<u64>,
     pub time_ms: f64,
     pub down: bool,
 }
@@ -283,6 +291,7 @@ mod tests {
         CursorMoveEvent {
             active_modifiers: vec![],
             cursor_id: cursor_id.to_string(),
+            session_time_us: None,
             time_ms,
             x: 0.0,
             y: 0.0,
@@ -294,6 +303,7 @@ mod tests {
             active_modifiers: vec![],
             cursor_id: cursor_id.to_string(),
             cursor_num: 0,
+            session_time_us: None,
             down: true,
             time_ms,
         }
@@ -382,5 +392,41 @@ mod tests {
                 .iter()
                 .all(|event| event.cursor_id == "pointer")
         );
+    }
+
+    #[test]
+    fn legacy_cursor_json_loads_without_session_time() {
+        let events: CursorEvents = serde_json::from_str(
+            r#"{
+                "clicks": [{
+                    "active_modifiers": [],
+                    "cursor_num": 0,
+                    "cursor_id": "pointer",
+                    "time_ms": 42.5,
+                    "down": true
+                }],
+                "moves": [{
+                    "active_modifiers": [],
+                    "cursor_id": "pointer",
+                    "time_ms": 42.0,
+                    "x": 0.5,
+                    "y": 0.5
+                }]
+            }"#,
+        )
+        .expect("legacy cursor event JSON should remain readable");
+
+        assert_eq!(events.moves[0].session_time_us, None);
+        assert_eq!(events.clicks[0].session_time_us, None);
+    }
+
+    #[test]
+    fn serializes_session_time_when_present() {
+        let mut event = move_event(42.0, "pointer");
+        event.session_time_us = Some(42_000);
+
+        let json = serde_json::to_string(&event).expect("cursor event serializes");
+
+        assert!(json.contains("\"session_time_us\":42000"));
     }
 }

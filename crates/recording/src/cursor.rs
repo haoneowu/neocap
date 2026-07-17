@@ -276,7 +276,9 @@ pub fn spawn_cursor_recorder(
                 break;
             }
 
-            let elapsed = start_time.instant().elapsed().as_secs_f64() * 1000.0;
+            let elapsed_duration = start_time.instant().elapsed();
+            let elapsed = elapsed_duration.as_secs_f64() * 1000.0;
+            let session_time_us = elapsed_duration.as_micros().min(u128::from(u64::MAX)) as u64;
             let mouse_state = device_state.get_mouse();
 
             let position = cap_cursor_capture::RawCursorPosition::get();
@@ -343,6 +345,7 @@ pub fn spawn_cursor_recorder(
                     let mouse_event = CursorMoveEvent {
                         active_modifiers: vec![],
                         cursor_id: cursor_id.clone(),
+                        session_time_us: Some(session_time_us),
                         time_ms: elapsed,
                         x: pos.x(),
                         y: pos.y(),
@@ -365,6 +368,7 @@ pub fn spawn_cursor_recorder(
                     active_modifiers: vec![],
                     cursor_num: num as u8,
                     cursor_id: cursor_id.clone(),
+                    session_time_us: Some(session_time_us),
                     time_ms: elapsed,
                 };
                 response.clicks.push(mouse_event);
