@@ -643,4 +643,30 @@ mod tests {
         assert_eq!(zooms.len(), 1);
         assert_eq!((zooms[0].start, zooms[0].end), (0.7, 3.5));
     }
+
+    #[test]
+    fn auto_zoom_is_deterministic_for_unordered_and_invalid_input() {
+        let mut invalid = click_event(f64::NAN, "pointer");
+        invalid.session_time_us = Some(9_999_999);
+
+        let input = vec![
+            click_event(7_000.0, "pointer"),
+            invalid,
+            click_event(1_000.0, "pointer"),
+            click_event(4_000.0, "pointer"),
+        ];
+        let first = generate_auto_zoom_segments(input.clone(), 12.0);
+        let second = generate_auto_zoom_segments(input.into_iter().rev().collect(), 12.0);
+
+        assert_eq!(
+            serde_json::to_vec(&first).expect("zoom output serializes"),
+            serde_json::to_vec(&second).expect("zoom output serializes"),
+        );
+        assert!(first.iter().all(|zoom| {
+            zoom.start.is_finite()
+                && zoom.end.is_finite()
+                && zoom.start >= 0.0
+                && zoom.end > zoom.start
+        }));
+    }
 }
