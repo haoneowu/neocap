@@ -489,17 +489,24 @@ mod tests {
     }
 
     #[test]
-    fn session_clock_is_normalized_before_legacy_render_paths_consume_events() {
+    fn session_clock_is_normalized_when_events_are_loaded() {
         let mut move_event = move_event(9.0, "pointer");
         move_event.session_time_us = Some(42_250);
         let mut click_event = click_event(8.0, "pointer");
         click_event.session_time_us = Some(42_500);
-        let mut events = CursorEvents {
+        let events = CursorEvents {
             moves: vec![move_event],
             clicks: vec![click_event],
         };
+        let directory = tempfile::tempdir().expect("temporary directory is available");
+        let path = directory.path().join("cursor.json");
+        std::fs::write(
+            &path,
+            serde_json::to_string(&events).expect("cursor events serialize"),
+        )
+        .expect("cursor events are written");
 
-        events.normalize_session_times();
+        let events = CursorEvents::load_from_file(&path).expect("cursor events load");
 
         assert_eq!(events.moves[0].time_ms, 42.25);
         assert_eq!(events.clicks[0].time_ms, 42.5);
