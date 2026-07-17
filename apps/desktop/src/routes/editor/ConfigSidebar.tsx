@@ -107,6 +107,7 @@ import {
 	encodeMaskEffect,
 	getMaskEffect,
 	getMaskEffectAmount,
+	type MaskCoordinateSpace,
 	type MaskEffect,
 	type MaskKind,
 	type MaskSegment,
@@ -3886,6 +3887,37 @@ function MaskSegmentConfig(props: {
 						/>
 					</div>
 				</div>
+			</Field>
+			<Field name="Attachment" icon={<IconLucideBoxSelect class="size-4" />}>
+				<RadioGroup
+					class="grid grid-cols-2 gap-2"
+					value={props.segment.coordinateSpace ?? "output"}
+					onChange={(value) =>
+						updateSegment((segment) => {
+							segment.coordinateSpace = value as MaskCoordinateSpace;
+						})
+					}
+				>
+					{[
+						{ value: "displayContent", label: "Screen content" },
+						{ value: "output", label: "Output canvas" },
+					].map((option) => (
+						<RadioGroup.Item
+							value={option.value}
+							class="rounded-lg border border-gray-3 transition-colors data-checked:border-blue-8 data-checked:bg-blue-3/40"
+						>
+							<RadioGroup.ItemInput class="sr-only" />
+							<RadioGroup.ItemLabel class="flex items-center gap-2 p-2 text-sm text-gray-12">
+								<RadioGroup.ItemControl class="size-4 rounded-full border border-gray-7 data-checked:border-blue-9 data-checked:bg-blue-9" />
+								{option.label}
+							</RadioGroup.ItemLabel>
+						</RadioGroup.Item>
+					))}
+				</RadioGroup>
+				<p class="mt-2 text-xs text-gray-11">
+					Screen content follows zoom and split-screen framing; output canvas
+					keeps a fixed position for legacy projects.
+				</p>
 			</Field>
 			<Show when={props.segment.maskType === "sensitive"}>
 				<Field name="Effect" icon={<IconLucideEyeOff class="size-4" />}>

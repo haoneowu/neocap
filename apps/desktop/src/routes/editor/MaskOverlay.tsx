@@ -5,7 +5,13 @@ import { produce } from "solid-js/store";
 
 import { useCanvasSnapTargets } from "./CanvasElementsOverlay";
 import { useEditorContext } from "./context";
-import { evaluateMask, type MaskSegment } from "./masks";
+import {
+	evaluateMask,
+	getMaskCoordinateSpace,
+	getMaskCoordinateTransform,
+	type MaskSegment,
+	maskStateToOutput,
+} from "./masks";
 import { SNAP_PX, snapMovingRect } from "./snapping";
 
 type MaskOverlayProps = {
@@ -13,8 +19,14 @@ type MaskOverlayProps = {
 };
 
 export function MaskOverlay(props: MaskOverlayProps) {
-	const { project, setProject, editorState, setEditorState, projectHistory } =
-		useEditorContext();
+	const {
+		project,
+		setProject,
+		editorState,
+		setEditorState,
+		projectHistory,
+		latestFrameLayout,
+	} = useEditorContext();
 
 	const currentAbsoluteTime = () =>
 		editorState.previewTime ?? editorState.playbackTime ?? 0;
@@ -103,7 +115,7 @@ export function MaskOverlay(props: MaskOverlayProps) {
 	};
 
 	const getMaskRectAtTime = (segment: MaskSegment, time: number) => {
-		const state = evaluateMask(segment, time);
+		const state = maskStateToOutput(segment, time, latestFrameLayout());
 		const width = state.size.x * props.size.width;
 		const height = state.size.y * props.size.height;
 		const left = state.position.x * props.size.width - width / 2;
@@ -189,6 +201,7 @@ export function MaskOverlay(props: MaskOverlayProps) {
 							<MaskOverlayContent
 								size={props.size}
 								maskIndex={index}
+								segment={segment}
 								maskState={maskState}
 								updateSegment={updateSegment}
 								projectHistory={projectHistory}
@@ -204,12 +217,13 @@ export function MaskOverlay(props: MaskOverlayProps) {
 function MaskOverlayContent(props: {
 	size: { width: number; height: number };
 	maskIndex: number;
+	segment: MaskSegment;
 	maskState: () => ReturnType<typeof evaluateMask>;
 	updateSegment: (fn: (segment: MaskSegment) => void) => void;
 	projectHistory: ReturnType<typeof useEditorContext>["projectHistory"];
 }) {
 	const { projectHistory, updateSegment } = props;
-	const { setSnapGuides } = useEditorContext();
+	const { setSnapGuides, latestFrameLayout } = useEditorContext();
 	const snapTargetsFor = useCanvasSnapTargets();
 
 	function createMouseDownDrag<T>(
@@ -251,12 +265,43 @@ function MaskOverlayContent(props: {
 	}
 
 	const state = () => props.maskState();
+	const coordinateTransform = () =>
+		getMaskCoordinateTransform(props.segment, latestFrameLayout());
+	const outputState = () => {
+		const raw = state();
+		const transform = coordinateTransform();
+		return {
+			position: {
+				x: transform.origin.x + raw.position.x * transform.scale.x,
+				y: transform.origin.y + raw.position.y * transform.scale.y,
+			},
+			size: {
+				x: raw.size.x * transform.scale.x,
+				y: raw.size.y * transform.scale.y,
+			},
+		};
+	};
 	const rect = () => {
-		const width = state().size.x * props.size.width;
-		const height = state().size.y * props.size.height;
-		const left = state().position.x * props.size.width - width / 2;
-		const top = state().position.y * props.size.height - height / 2;
+		const output = outputState();
+		const width = output.size.x * props.size.width;
+		const height = output.size.y * props.size.height;
+		const left = output.position.x * props.size.width - width / 2;
+		const top = output.position.y * props.size.height - height / 2;
 		return { width, height, left, top };
+	};
+	const sourceDelta = (
+		event: MouseEvent,
+		initialMouse: { x: number; y: number },
+	) => {
+		const transform = coordinateTransform();
+		return {
+			x:
+				(event.clientX - initialMouse.x) /
+				Math.max(1, props.size.width * transform.scale.x),
+			y:
+				(event.clientY - initialMouse.y) /
+				Math.max(1, props.size.height * transform.scale.y),
+		};
 	};
 
 	const onMove = createMouseDownDrag(
@@ -266,12 +311,13 @@ function MaskOverlayContent(props: {
 			targets: snapTargetsFor({ mask: props.maskIndex }),
 		}),
 		(e, { startPos, startSize, targets }, initialMouse) => {
-			const dx = (e.clientX - initialMouse.x) / props.size.width;
-			const dy = (e.clientY - initialMouse.y) / props.size.height;
+			const { x: dx, y: dy } = sourceDelta(e, initialMouse);
 
 			let snapDx = 0;
 			let snapDy = 0;
-			if (e.shiftKey) {
+			const sourceSpace =
+				getMaskCoordinateSpace(props.segment) === "displayContent";
+			if (e.shiftKey || sourceSpace) {
 				setSnapGuides([]);
 			} else {
 				const snap = snapMovingRect(
@@ -304,8 +350,7 @@ function MaskOverlayContent(props: {
 				startSize: { ...state().size },
 			}),
 			(e, { startPos, startSize }, initialMouse) => {
-				const dx = (e.clientX - initialMouse.x) / props.size.width;
-				const dy = (e.clientY - initialMouse.y) / props.size.height;
+				const { x: dx, y: dy } = sourceDelta(e, initialMouse);
 
 				updateSegment((s) => {
 					if (dirX !== 0) {

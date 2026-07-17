@@ -2960,6 +2960,7 @@ struct EditorStateChanged {
 #[derive(Serialize, specta::Type, tauri_specta::Event, Debug, Clone, PartialEq)]
 pub(crate) struct FrameLayoutEvent {
     display: [f32; 4],
+    display_content: [f32; 4],
     camera: Option<[f32; 4]>,
     output_width: u32,
     output_height: u32,
@@ -2969,6 +2970,7 @@ impl From<cap_editor::FrameLayout> for FrameLayoutEvent {
     fn from(layout: cap_editor::FrameLayout) -> Self {
         Self {
             display: layout.display,
+            display_content: layout.display_content,
             camera: layout.camera,
             output_width: layout.output_size[0],
             output_height: layout.output_size[1],

@@ -759,6 +759,21 @@ pub enum MaskKind {
     Highlight,
 }
 
+/// Coordinate system used to persist a mask rectangle.
+///
+/// `Output` is the legacy/default meaning: normalized against the final
+/// output canvas. `DisplayContent` is normalized against the screen-content
+/// layer before its current zoom/split placement. Keeping `Output` as the
+/// serde default means projects saved before this field was introduced render
+/// exactly as they did before.
+#[derive(Type, Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum MaskCoordinateSpace {
+    #[default]
+    Output,
+    DisplayContent,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MaskEffectContract {
@@ -813,6 +828,8 @@ pub struct MaskSegment {
     #[serde(default = "MaskSegment::default_enabled")]
     pub enabled: bool,
     pub mask_type: MaskKind,
+    #[serde(default)]
+    pub coordinate_space: MaskCoordinateSpace,
     pub center: XY<f64>,
     pub size: XY<f64>,
     #[serde(default)]
@@ -1654,6 +1671,32 @@ mod tests {
         .unwrap();
 
         assert_eq!(segment.pixelation, 16.0);
+        assert_eq!(segment.coordinate_space, MaskCoordinateSpace::Output);
+    }
+
+    #[test]
+    fn display_content_coordinate_space_round_trips_in_project_json() {
+        let segment: MaskSegment = serde_json::from_value(serde_json::json!({
+            "start": 0.0,
+            "end": 1.0,
+            "maskType": "sensitive",
+            "coordinateSpace": "displayContent",
+            "center": { "x": 0.5, "y": 0.5 },
+            "size": { "x": 0.25, "y": 0.25 }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            segment.coordinate_space,
+            MaskCoordinateSpace::DisplayContent
+        );
+        assert_eq!(
+            serde_json::to_value(segment)
+                .unwrap()
+                .get("coordinateSpace")
+                .and_then(Value::as_str),
+            Some("displayContent")
+        );
     }
 
     #[test]

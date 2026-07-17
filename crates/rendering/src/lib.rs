@@ -2256,6 +2256,10 @@ impl MotionBlurDescriptor {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FrameLayout {
     pub display: [f32; 4],
+    /// Rendered screen-content bounds in output-frame pixels. Unlike
+    /// `display`, this excludes decorative frame chrome and is the canonical
+    /// mapping target for source-content annotations such as privacy masks.
+    pub display_content: [f32; 4],
     pub camera: Option<[f32; 4]>,
     pub output_size: [u32; 2],
 }
@@ -2274,6 +2278,7 @@ impl ProjectUniforms {
     pub fn frame_layout(&self) -> FrameLayout {
         FrameLayout {
             display: self.display_outer_bounds,
+            display_content: self.display.target_bounds,
             camera: self.camera.as_ref().map(|c| c.target_bounds),
             output_size: [self.output_size.0, self.output_size.1],
         }
@@ -3564,6 +3569,7 @@ impl ProjectUniforms {
                 interpolate_masks(
                     XY::new(output_size.0, output_size.1),
                     frame_time as f64,
+                    &display,
                     &timeline.mask_segments,
                 )
             })

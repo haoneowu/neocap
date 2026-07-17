@@ -1,8 +1,9 @@
-import type { XY } from "~/utils/tauri";
+import type { FrameLayoutEvent, XY } from "~/utils/tauri";
 import maskEffectContract from "../../../../../crates/project/mask-effects.json";
 
 export type MaskKind = "sensitive" | "highlight";
 export type MaskEffect = "blur" | "pixelate";
+export type MaskCoordinateSpace = "output" | "displayContent";
 
 // Older versions interpret encoded blur as strong pixelation, keeping masked content private.
 const {
@@ -35,6 +36,7 @@ export type MaskSegment = {
 	track: number;
 	enabled: boolean;
 	maskType: MaskKind;
+	coordinateSpace: MaskCoordinateSpace;
 	center: XY<number>;
 	size: XY<number>;
 	feather: number;
@@ -45,9 +47,18 @@ export type MaskSegment = {
 	keyframes: MaskKeyframes;
 };
 
+type PersistedMaskSegment = Omit<MaskSegment, "coordinateSpace"> & {
+	coordinateSpace?: MaskCoordinateSpace;
+};
+
 export type MaskState = {
 	position: XY<number>;
 	size: XY<number>;
+};
+
+export type MaskCoordinateTransform = {
+	origin: XY<number>;
+	scale: XY<number>;
 };
 
 const normalizeMaskEffectAmount = (amount: number) => {
@@ -90,6 +101,7 @@ export const defaultMaskSegment = (
 	track: 0,
 	enabled: true,
 	maskType: "sensitive",
+	coordinateSpace: "displayContent",
 	center: { x: 0.5, y: 0.5 },
 	size: { x: 0.35, y: 0.35 },
 	feather: 0.1,
@@ -100,8 +112,68 @@ export const defaultMaskSegment = (
 	keyframes: { position: [], size: [], intensity: [] },
 });
 
+/**
+ * Older projects omitted coordinateSpace and therefore retain their original
+ * output-canvas semantics. New masks use displayContent so they remain glued
+ * to a sensitive screen region while the screen zooms or enters a split view.
+ */
+export const getMaskCoordinateSpace = (segment: {
+	coordinateSpace?: MaskCoordinateSpace;
+}): MaskCoordinateSpace => segment.coordinateSpace ?? "output";
+
+export const getMaskCoordinateTransform = (
+	segment: { coordinateSpace?: MaskCoordinateSpace },
+	layout: FrameLayoutEvent | null | undefined,
+): MaskCoordinateTransform => {
+	if (getMaskCoordinateSpace(segment) !== "displayContent" || !layout) {
+		return { origin: { x: 0, y: 0 }, scale: { x: 1, y: 1 } };
+	}
+
+	const [left, top, right, bottom] = layout.display_content;
+	const width = Math.max(0, right - left);
+	const height = Math.max(0, bottom - top);
+	if (
+		layout.output_width <= 0 ||
+		layout.output_height <= 0 ||
+		!width ||
+		!height
+	) {
+		return { origin: { x: 0, y: 0 }, scale: { x: 1, y: 1 } };
+	}
+
+	return {
+		origin: {
+			x: left / layout.output_width,
+			y: top / layout.output_height,
+		},
+		scale: {
+			x: width / layout.output_width,
+			y: height / layout.output_height,
+		},
+	};
+};
+
+export const maskStateToOutput = (
+	segment: PersistedMaskSegment,
+	time: number | undefined,
+	layout: FrameLayoutEvent | null | undefined,
+): MaskState => {
+	const state = evaluateMask(segment, time);
+	const transform = getMaskCoordinateTransform(segment, layout);
+	return {
+		position: {
+			x: transform.origin.x + state.position.x * transform.scale.x,
+			y: transform.origin.y + state.position.y * transform.scale.y,
+		},
+		size: {
+			x: state.size.x * transform.scale.x,
+			y: state.size.y * transform.scale.y,
+		},
+	};
+};
+
 export const evaluateMask = (
-	segment: MaskSegment,
+	segment: Pick<MaskSegment, "center" | "size">,
 	_time?: number,
 ): MaskState => {
 	const position = {
