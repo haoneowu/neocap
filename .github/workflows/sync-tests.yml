@@ -156,6 +156,11 @@ jobs:
         env:
           CAP_SYNC_MATRIX_REPORT: ${{ github.workspace }}/sync-matrix-${{ matrix.runner }}.json
           CAP_SYNC_MATRIX_RANDOM_CASES: ${{ github.event_name == 'schedule' && '40' || '6' }}
+          # The matrix verifies lossless PTS behavior, including intentionally
+          # extreme delivered rates. Give this test-only queue enough headroom
+          # to avoid exercising the production muxer's deliberate real-time
+          # overload-drop policy (default: 30 frames).
+          CAP_MUXER_BUFFER_SIZE: "512"
         run: |
           cargo test --locked -p cap-recording --test sync_matrix -- --nocapture
 
