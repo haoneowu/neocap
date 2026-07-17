@@ -6,7 +6,6 @@ import {
 	type CaptionData,
 	type CaptionSegment,
 	type CaptionTrackSegment,
-	type CaptionWord,
 	commands,
 	type SegmentRecordings,
 	type TimelineSegment,
@@ -15,6 +14,10 @@ import {
 import { getCaptionTextFromWords } from "./caption-text";
 
 export { getCaptionTextFromWords } from "./caption-text";
+export {
+	syncCaptionWordsWithText,
+	tokenizeCaptionText,
+} from "./caption-word-editing";
 export { segmentCaptionsForShortForm } from "./short-form-captions";
 export const DEFAULT_WHISPER_CAPTION_MODEL = "small";
 // This product is local-first and Chinese-first. Whisper small is multilingual,
@@ -489,47 +492,6 @@ export async function transcribeEditorCaptions(
 		? "Parakeet"
 		: "Whisper";
 	return await commands.transcribeAudio(videoPath, modelPath, language, engine);
-}
-
-export function syncCaptionWordsWithText(
-	text: string,
-	existingWords: CaptionWord[] | undefined,
-	start: number,
-	end: number,
-): CaptionWord[] {
-	const tokens = text
-		.trim()
-		.split(/\s+/)
-		.map((token) => token.trim())
-		.filter((token) => token.length > 0);
-
-	if (tokens.length === 0) {
-		return [];
-	}
-
-	const baseWords = existingWords ?? [];
-	if (baseWords.length === tokens.length && baseWords.length > 0) {
-		return baseWords.map((word, index) => ({
-			...word,
-			text: tokens[index] ?? word.text,
-		}));
-	}
-
-	const duration = Math.max(end - start, 0);
-	const step = tokens.length > 0 ? duration / tokens.length : 0;
-
-	return tokens.map((token, index) => {
-		const source = baseWords[index];
-		const wordStart = start + step * index;
-		const wordEnd =
-			index === tokens.length - 1 ? end : start + step * (index + 1);
-
-		return {
-			text: token,
-			start: source?.start ?? wordStart,
-			end: source?.end ?? wordEnd,
-		};
-	});
 }
 
 export function getCaptionGenerationErrorMessage(error: unknown) {
