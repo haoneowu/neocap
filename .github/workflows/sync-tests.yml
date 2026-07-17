@@ -129,6 +129,15 @@ jobs:
         run: |
           cargo test --locked -p cap-enc-avfoundation
 
+      # The product's local-ASR boundary must reject unknown/corrupted models
+      # before transcription. This desktop-native test is macOS-only because
+      # the desktop crate links the platform capture stack.
+      - name: Local Whisper model-integrity tests (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          cargo test --locked -p cap-desktop --lib captions::tests::whisper_model -- --nocapture
+
       # Runs against the Scream endpoint installed above; the env var turns
       # a missing endpoint (driver install regression) into a hard failure
       # instead of a silent skip.
