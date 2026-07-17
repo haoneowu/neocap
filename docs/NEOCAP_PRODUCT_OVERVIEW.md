@@ -7,7 +7,7 @@
 | Product | NeoCap |
 | Document Type | Product Overview |
 | Status | Draft |
-| Version | v0.1 |
+| Version | v0.2 |
 | Created | 2026-07-17 |
 | Last Updated | 2026-07-17 |
 | Owner | Haowu |
@@ -17,6 +17,7 @@
 | Date | Version | Change | Author |
 | --- | --- | --- |
 | 2026-07-17 | v0.1 | Publishes the concise public product scope for the initial fork. | Codex |
+| 2026-07-17 | v0.2 | Records the public repository, AGPL public-fork decision, and first implementation PR. | Codex |
 
 ## Product Promise
 
@@ -33,3 +34,7 @@ Record a screen, camera, audio, and interaction once; locally turn it into a pub
 ## Explicit Non-goals
 
 NeoCap is not a full CapCut-style editor, AI avatar tool, mandatory cloud service, or mobile product in its first release.
+
+## Public Development
+
+NeoCap is an AGPL-compatible public fork of Cap. Development happens in this repository; the first product change is tracked in Draft PR #1. The current release target is a direct Apple-notarized macOS download after automated and manual test gates pass.
