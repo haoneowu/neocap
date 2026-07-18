@@ -12,6 +12,16 @@ use tauri_plugin_store::StoreExt;
 
 use crate::tray;
 
+/// NeoCap records locally. Upstream Instant mode provisions a Cap Cloud share
+/// session, so legacy callers are normalized to Studio before they persist or
+/// start a recording.
+pub const fn local_recording_mode(mode: RecordingMode) -> RecordingMode {
+    match mode {
+        RecordingMode::Instant => RecordingMode::Studio,
+        mode => mode,
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize, specta::Type, Debug, Clone, Copy)]
 #[serde(rename_all = "camelCase")]
 pub enum RecordingTargetMode {
@@ -51,7 +61,7 @@ impl RecordingSettingsStore {
         let store = app.store("store").map_err(|e| e.to_string())?;
 
         let mut settings = Self::get(app)?.unwrap_or_default();
-        settings.mode = Some(mode);
+        settings.mode = Some(local_recording_mode(mode));
 
         store.set(Self::KEY, serde_json::json!(settings));
         store.save().map_err(|e| e.to_string())
@@ -90,7 +100,31 @@ pub fn camera_key(id: &DeviceOrModelID) -> String {
 #[tauri::command]
 #[specta::specta]
 pub fn set_recording_mode(app: AppHandle, mode: RecordingMode) -> Result<(), String> {
+    let mode = local_recording_mode(mode);
     RecordingSettingsStore::set_mode(&app, mode)?;
     tray::update_tray_icon_for_mode(&app, mode);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use cap_recording::RecordingMode;
+
+    use super::local_recording_mode;
+
+    #[test]
+    fn legacy_instant_selection_is_normalized_to_local_studio() {
+        assert_eq!(
+            local_recording_mode(RecordingMode::Instant),
+            RecordingMode::Studio
+        );
+        assert_eq!(
+            local_recording_mode(RecordingMode::Studio),
+            RecordingMode::Studio
+        );
+        assert_eq!(
+            local_recording_mode(RecordingMode::Screenshot),
+            RecordingMode::Screenshot
+        );
+    }
 }

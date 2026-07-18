@@ -1486,6 +1486,13 @@ pub async fn start_recording(
 ) -> Result<RecordingAction, String> {
     let mut inputs = inputs;
 
+    let local_mode = crate::recording_settings::local_recording_mode(inputs.mode);
+    // Normalize before any pending state, upload setup, or account lookup.
+    if local_mode != inputs.mode {
+        info!("Converting legacy Instant selection to local Studio recording");
+        inputs.mode = local_mode;
+    }
+
     if EditorRecordingTarget::current(&app).is_some() {
         inputs.mode = RecordingMode::Studio;
     }

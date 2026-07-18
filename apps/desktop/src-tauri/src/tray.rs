@@ -360,7 +360,7 @@ fn get_current_mode(app: &AppHandle) -> RecordingMode {
         .ok()
         .flatten()
         .and_then(|s| s.mode)
-        .unwrap_or_default()
+        .unwrap_or(RecordingMode::Studio)
 }
 
 fn should_use_minimal_onboarding_tray_menu(app: &AppHandle) -> bool {
@@ -388,7 +388,6 @@ fn create_mode_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>> {
 
     let modes = [
         (TrayItem::ModeStudio, RecordingMode::Studio, "Studio"),
-        (TrayItem::ModeInstant, RecordingMode::Instant, "Instant"),
         (
             TrayItem::ModeScreenshot,
             RecordingMode::Screenshot,

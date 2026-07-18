@@ -113,7 +113,9 @@ export const recordingSettingsStore = declareStore<RecordingSettingsStore>(
 		target: null,
 		micName: null,
 		cameraId: null,
-		mode: "instant",
+		// NeoCap is a local-first recorder. Studio stores media locally and never
+		// creates a Cap Cloud share/upload session, unlike upstream Instant mode.
+		mode: "studio",
 		systemAudio: false,
 		organizationId: null,
 		cameraDeviceSettings: {},

@@ -36,6 +36,7 @@
 		"test:matrix:quick": "pnpm with-env cargo run -p cap-test -- matrix --quick",
 		"test:matrix:exhaustive": "pnpm with-env cargo run -p cap-test -- matrix --exhaustive",
 		"test:synthetic": "pnpm with-env cargo run -p cap-test -- synthetic",
+		"test:export:fixture": "node scripts/verify-p0-export-fixture.mjs",
 		"test:benchmark": "pnpm with-env cargo run -p cap-test -- benchmark",
 		"test:suite:recording": "pnpm with-env cargo run -p cap-test -- suite recording",
 		"test:suite:encoding": "pnpm with-env cargo run -p cap-test -- suite encoding",

@@ -2917,9 +2917,10 @@ fn mix_samples(dest: &mut [f32], source: &[f32]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        AudioExtractionSource, CaptionWord, WhisperModelManifest, WhisperModelPart,
-        caption_text_from_words, caption_word_chunks, normalize_caption_words, parse_captions_json,
-        resolve_audio_extraction_source, resolve_path_with_base, whisper_model_file_matches_entry,
+        AudioExtractionSource, CaptionData, CaptionSegment, CaptionWord, WhisperModelManifest,
+        WhisperModelPart, caption_text_from_words, caption_word_chunks, captions_to_srt,
+        normalize_caption_words, parse_captions_json, resolve_audio_extraction_source,
+        resolve_path_with_base, whisper_model_file_matches_entry,
         whisper_model_file_matches_manifest, whisper_model_manifest, whisper_model_staging_path,
     };
     use std::io::Write;
@@ -2990,7 +2991,7 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_whisper_file_is_not_treated_as_downloaded() {
+    fn whisper_model_incomplete_file_is_not_treated_as_downloaded() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("small.bin");
         std::fs::write(&path, b"ggml-interrupted-download").unwrap();
@@ -2999,7 +3000,7 @@ mod tests {
     }
 
     #[test]
-    fn complete_model_file_must_match_the_manifest_checksum() {
+    fn whisper_model_complete_file_must_match_the_manifest_checksum() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("fixture.bin");
         let manifest = WhisperModelManifest {
@@ -3014,7 +3015,8 @@ mod tests {
     }
 
     #[test]
-    fn known_size_and_header_without_matching_checksum_is_not_treated_as_downloaded() {
+    fn whisper_model_known_size_and_header_without_matching_checksum_is_not_treated_as_downloaded()
+    {
         let dir = tempdir().unwrap();
         let path = dir.path().join("small.bin");
         let expected_size = whisper_model_manifest("small").unwrap().total_size();
@@ -3113,6 +3115,34 @@ mod tests {
 
         assert_eq!(words.len(), 1);
         assert!((words[0].end - 1.4).abs() < 1e-4);
+    }
+
+    #[test]
+    fn srt_export_preserves_chinese_short_phrases_and_timestamps() {
+        let captions = CaptionData {
+            segments: vec![
+                CaptionSegment {
+                    id: "one".to_string(),
+                    start: 1.25,
+                    end: 2.5,
+                    text: "现在开始录屏".to_string(),
+                    words: Vec::new(),
+                },
+                CaptionSegment {
+                    id: "two".to_string(),
+                    start: 65.5,
+                    end: 66.75,
+                    text: "点击这里放大".to_string(),
+                    words: Vec::new(),
+                },
+            ],
+            settings: None,
+        };
+
+        assert_eq!(
+            captions_to_srt(&captions),
+            "1\n00:00:01,250 --> 00:00:02,500\n现在开始录屏\n\n2\n00:01:05,500 --> 00:01:06,750\n点击这里放大\n\n"
+        );
     }
 
     #[test]
