@@ -4964,6 +4964,7 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
             captions::transcribe_audio,
             captions::save_captions,
             captions::load_captions,
+            captions::discover_local_caption_models,
             captions::get_model_download_status,
             captions::download_whisper_model,
             captions::check_model_exists,

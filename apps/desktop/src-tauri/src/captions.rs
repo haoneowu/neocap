@@ -16,7 +16,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 use tempfile::tempdir;
@@ -36,6 +36,26 @@ const PARAKEET_UNSUPPORTED_MESSAGE: &str = "Parakeet transcription is not availa
 pub enum TranscriptionEngine {
     Whisper,
     Parakeet,
+}
+
+#[derive(Debug, Serialize, Deserialize, Type, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum LocalModelCompatibility {
+    Direct,
+    AdapterRequired,
+    Unsupported,
+}
+
+#[derive(Debug, Serialize, Deserialize, Type, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectedLocalModel {
+    pub id: String,
+    pub provider: String,
+    pub display_name: String,
+    pub size_bytes: u64,
+    pub format: String,
+    pub compatibility: LocalModelCompatibility,
+    pub reason: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Type, Clone)]
@@ -2161,18 +2181,29 @@ fn whisper_model_file_has_ggml_header(path: &Path) -> bool {
 }
 
 fn whisper_model_file_matches_entry(path: &Path, manifest: WhisperModelManifest) -> bool {
+    whisper_model_file_matches_entry_before(path, manifest, None).unwrap_or(false)
+}
+
+fn whisper_model_file_matches_entry_before(
+    path: &Path,
+    manifest: WhisperModelManifest,
+    deadline: Option<Instant>,
+) -> Option<bool> {
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        return None;
+    }
     let Ok(metadata) = std::fs::metadata(path) else {
-        return false;
+        return Some(false);
     };
     if !metadata.is_file()
         || metadata.len() != manifest.total_size()
         || !whisper_model_file_has_ggml_header(path)
     {
-        return false;
+        return Some(false);
     }
 
     let Ok(mut file) = File::open(path) else {
-        return false;
+        return Some(false);
     };
     let mut buffer = [0_u8; 64 * 1024];
 
@@ -2180,23 +2211,26 @@ fn whisper_model_file_matches_entry(path: &Path, manifest: WhisperModelManifest)
         let mut remaining = part.expected_size;
         let mut hasher = Sha256::new();
         while remaining > 0 {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return None;
+            }
             let read_len = remaining.min(buffer.len() as u64) as usize;
             let Ok(bytes_read) = file.read(&mut buffer[..read_len]) else {
-                return false;
+                return Some(false);
             };
             if bytes_read == 0 {
-                return false;
+                return Some(false);
             }
             hasher.update(&buffer[..bytes_read]);
             remaining -= bytes_read as u64;
         }
 
         if format!("{:x}", hasher.finalize()) != part.sha256 {
-            return false;
+            return Some(false);
         }
     }
 
-    true
+    Some(true)
 }
 
 /// Accept files produced by older Cap versions as long as they match a trusted
@@ -2208,6 +2242,273 @@ fn whisper_model_file_matches_manifest(path: &Path) -> bool {
         .iter()
         .copied()
         .any(|manifest| whisper_model_file_matches_entry(path, manifest))
+}
+
+const DISCOVERY_MAX_DEPTH: usize = 4;
+const DISCOVERY_MAX_FILES: usize = 128;
+const DISCOVERY_TIME_BUDGET: Duration = Duration::from_millis(250);
+
+fn is_safe_discovery_directory(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+}
+
+fn is_safe_discovery_file(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+}
+
+fn canonical_discovery_root(path: &Path) -> Option<PathBuf> {
+    if !is_safe_discovery_directory(path) {
+        return None;
+    }
+    path.canonicalize().ok()
+}
+
+fn bounded_directory_size(path: &Path, deadline: Instant) -> u64 {
+    if !is_safe_discovery_directory(path) {
+        return 0;
+    }
+
+    let mut total = 0_u64;
+    let mut file_count = 0_usize;
+    let mut pending = vec![(path.to_path_buf(), 0_usize)];
+
+    while let Some((current, depth)) = pending.pop() {
+        if Instant::now() >= deadline || depth > DISCOVERY_MAX_DEPTH {
+            break;
+        }
+
+        let Ok(entries) = std::fs::read_dir(current) else {
+            continue;
+        };
+
+        for entry in entries.flatten() {
+            if Instant::now() >= deadline || file_count >= DISCOVERY_MAX_FILES {
+                return total;
+            }
+
+            let path = entry.path();
+            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_file() {
+                total = total.saturating_add(metadata.len());
+                file_count += 1;
+            } else if metadata.is_dir() {
+                pending.push((path, depth + 1));
+            }
+        }
+    }
+
+    total
+}
+
+fn local_model(
+    id: &str,
+    provider: &str,
+    display_name: &str,
+    size_bytes: u64,
+    format: &str,
+    compatibility: LocalModelCompatibility,
+    reason: &str,
+) -> DetectedLocalModel {
+    DetectedLocalModel {
+        id: id.to_string(),
+        provider: provider.to_string(),
+        display_name: display_name.to_string(),
+        size_bytes,
+        format: format.to_string(),
+        compatibility,
+        reason: reason.to_string(),
+    }
+}
+
+fn discover_local_caption_models_with_manifests(
+    neocap_models_dir: &Path,
+    hush_assets_dir: &Path,
+    manifests: &[WhisperModelManifest],
+) -> Vec<DetectedLocalModel> {
+    discover_local_caption_models_with_manifests_before(
+        neocap_models_dir,
+        hush_assets_dir,
+        manifests,
+        Instant::now() + DISCOVERY_TIME_BUDGET,
+    )
+}
+
+fn discover_local_caption_models_with_manifests_before(
+    neocap_models_dir: &Path,
+    hush_assets_dir: &Path,
+    manifests: &[WhisperModelManifest],
+    deadline: Instant,
+) -> Vec<DetectedLocalModel> {
+    let mut models = Vec::new();
+
+    if let Some(neocap_models_dir) = canonical_discovery_root(neocap_models_dir) {
+        for manifest in manifests {
+            if Instant::now() >= deadline {
+                break;
+            }
+            let path = neocap_models_dir.join(format!("{}.bin", manifest.name));
+            if !path.exists() || !is_safe_discovery_file(&path) {
+                continue;
+            }
+
+            let compatibility =
+                match whisper_model_file_matches_entry_before(&path, *manifest, Some(deadline)) {
+                    Some(true) => LocalModelCompatibility::Direct,
+                    Some(false) => LocalModelCompatibility::Unsupported,
+                    None => break,
+                };
+            let reason = match compatibility {
+                LocalModelCompatibility::Direct => "Verified NeoCap Whisper model ready to use",
+                LocalModelCompatibility::Unsupported => {
+                    "NeoCap Whisper file does not match the required version, size, header, and checksum"
+                }
+                LocalModelCompatibility::AdapterRequired => unreachable!(),
+            };
+            let size_bytes = std::fs::metadata(&path).map_or(0, |metadata| metadata.len());
+            models.push(local_model(
+                &format!("neocap-whisper-{}", manifest.name),
+                "NeoCap",
+                &format!("Whisper {}", manifest.name),
+                size_bytes,
+                "GGML",
+                compatibility,
+                reason,
+            ));
+        }
+    }
+
+    if let Some(hush_assets_dir) = canonical_discovery_root(hush_assets_dir) {
+        let Ok(entries) = std::fs::read_dir(&hush_assets_dir) else {
+            return models;
+        };
+
+        let mut recognized_assets = Vec::new();
+        for entry in entries.flatten() {
+            if Instant::now() >= deadline {
+                break;
+            }
+            let path = entry.path();
+            if !is_safe_discovery_directory(&path) {
+                continue;
+            }
+            let Ok(path) = path.canonicalize() else {
+                continue;
+            };
+            if !path.starts_with(&hush_assets_dir) {
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+
+            if name.starts_with("speech-qwen-asr-")
+                || (name.starts_with("speech-whisper-") && name.contains("coreml"))
+            {
+                recognized_assets.push((name.to_string(), path));
+            }
+        }
+
+        recognized_assets.sort_by(|left, right| left.0.cmp(&right.0));
+        for (name, path) in recognized_assets.into_iter().take(DISCOVERY_MAX_FILES) {
+            if Instant::now() >= deadline {
+                break;
+            }
+
+            if name.starts_with("speech-qwen-asr-") {
+                let model_path = path.join("model.safetensors");
+                let compatibility = if is_safe_discovery_file(&model_path) {
+                    LocalModelCompatibility::AdapterRequired
+                } else {
+                    LocalModelCompatibility::Unsupported
+                };
+                let reason = match compatibility {
+                    LocalModelCompatibility::AdapterRequired => {
+                        "Qwen ASR is installed, but NeoCap's Qwen ASR adapter is not installed"
+                    }
+                    LocalModelCompatibility::Unsupported => {
+                        "Qwen ASR asset is incomplete or uses an unsupported layout"
+                    }
+                    LocalModelCompatibility::Direct => unreachable!(),
+                };
+                models.push(local_model(
+                    "hush-qwen-asr",
+                    "hush·hush",
+                    "Qwen3 ASR",
+                    bounded_directory_size(&path, deadline),
+                    "SafeTensors",
+                    compatibility,
+                    reason,
+                ));
+            } else if name.starts_with("speech-whisper-") && name.contains("coreml") {
+                let encoder_path = path.join("AudioEncoder.mlmodelc");
+                let compatibility = if is_safe_discovery_directory(&encoder_path) {
+                    LocalModelCompatibility::AdapterRequired
+                } else {
+                    LocalModelCompatibility::Unsupported
+                };
+                let reason = match compatibility {
+                    LocalModelCompatibility::AdapterRequired => {
+                        "Whisper Core ML is installed, but NeoCap's Whisper provider requires verified GGML"
+                    }
+                    LocalModelCompatibility::Unsupported => {
+                        "Whisper Core ML asset is incomplete or uses an unsupported layout"
+                    }
+                    LocalModelCompatibility::Direct => unreachable!(),
+                };
+                models.push(local_model(
+                    "hush-whisper-coreml",
+                    "hush·hush",
+                    "Whisper Core ML",
+                    bounded_directory_size(&path, deadline),
+                    "Core ML",
+                    compatibility,
+                    reason,
+                ));
+            }
+        }
+    }
+
+    models.sort_by(|left, right| left.id.cmp(&right.id));
+    models
+}
+
+fn discover_local_caption_models_in_roots(
+    neocap_models_dir: &Path,
+    hush_assets_dir: &Path,
+) -> Vec<DetectedLocalModel> {
+    discover_local_caption_models_with_manifests(
+        neocap_models_dir,
+        hush_assets_dir,
+        WHISPER_MODEL_MANIFESTS,
+    )
+}
+
+#[tauri::command]
+#[specta::specta]
+#[instrument(skip(app))]
+pub async fn discover_local_caption_models(
+    app: AppHandle,
+) -> Result<Vec<DetectedLocalModel>, String> {
+    let neocap_models_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|_| "Failed to get app local data directory".to_string())?
+        .join("transcription_models");
+    let hush_assets_dir = dirs::data_dir()
+        .map(|directory| directory.join("hush·hush/Models/assets"))
+        .unwrap_or_default();
+
+    tokio::task::spawn_blocking(move || {
+        discover_local_caption_models_in_roots(&neocap_models_dir, &hush_assets_dir)
+    })
+    .await
+    .map_err(|error| format!("Failed to inspect local caption models: {error}"))
 }
 
 #[tauri::command]
@@ -2917,20 +3218,28 @@ fn mix_samples(dest: &mut [f32], source: &[f32]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        AudioExtractionSource, CaptionData, CaptionSegment, CaptionWord, WhisperModelManifest,
-        WhisperModelPart, caption_text_from_words, caption_word_chunks, captions_to_srt,
-        normalize_caption_words, parse_captions_json, resolve_audio_extraction_source,
-        resolve_path_with_base, whisper_model_file_matches_entry,
-        whisper_model_file_matches_manifest, whisper_model_manifest, whisper_model_staging_path,
+        AudioExtractionSource, CaptionData, CaptionSegment, CaptionWord, DISCOVERY_MAX_FILES,
+        LocalModelCompatibility, WhisperModelManifest, WhisperModelPart, caption_text_from_words,
+        caption_word_chunks, captions_to_srt, discover_local_caption_models_with_manifests,
+        discover_local_caption_models_with_manifests_before, normalize_caption_words,
+        parse_captions_json, resolve_audio_extraction_source, resolve_path_with_base,
+        whisper_model_file_matches_entry, whisper_model_file_matches_manifest,
+        whisper_model_manifest, whisper_model_staging_path,
     };
     use std::io::Write;
     use std::path::Path;
+    use std::time::Instant;
     use tempfile::tempdir;
 
     static FIXTURE_MODEL_PARTS: &[WhisperModelPart] = &[WhisperModelPart {
         url: "https://example.invalid/fixture.bin",
         expected_size: 4,
         sha256: "20dacd925aeceadc9a0aa77d7869bd4904efd399b3571b5c464d13191adadccb",
+    }];
+
+    static FIXTURE_MODEL_MANIFESTS: &[WhisperModelManifest] = &[WhisperModelManifest {
+        name: "fixture",
+        parts: FIXTURE_MODEL_PARTS,
     }];
 
     fn word(text: &str, index: usize) -> CaptionWord {
@@ -3026,6 +3335,148 @@ mod tests {
         drop(file);
 
         assert!(!whisper_model_file_matches_manifest(&path));
+    }
+
+    #[test]
+    fn local_model_discovery_classifies_verified_neocap_and_hush_assets_without_writing() {
+        let dir = tempdir().unwrap();
+        let neocap_models = dir.path().join("neocap");
+        let hush_assets = dir.path().join("hush");
+        std::fs::create_dir_all(&neocap_models).unwrap();
+        std::fs::create_dir_all(hush_assets.join("speech-qwen-asr-0.6b-5bit-runtime-v1")).unwrap();
+        std::fs::create_dir_all(
+            hush_assets
+                .join("speech-whisper-large-v3-turbo-coreml-runtime-v1")
+                .join("AudioEncoder.mlmodelc"),
+        )
+        .unwrap();
+
+        std::fs::write(neocap_models.join("fixture.bin"), b"ggml").unwrap();
+        let qwen_path = hush_assets
+            .join("speech-qwen-asr-0.6b-5bit-runtime-v1")
+            .join("model.safetensors");
+        std::fs::write(&qwen_path, b"foreign-qwen-weights").unwrap();
+        let coreml_path = hush_assets
+            .join("speech-whisper-large-v3-turbo-coreml-runtime-v1")
+            .join("AudioEncoder.mlmodelc")
+            .join("coremldata.bin");
+        std::fs::write(&coreml_path, b"foreign-coreml-weights").unwrap();
+
+        let models = discover_local_caption_models_with_manifests(
+            &neocap_models,
+            &hush_assets,
+            FIXTURE_MODEL_MANIFESTS,
+        );
+
+        assert!(models.iter().any(|model| {
+            model.id == "neocap-whisper-fixture"
+                && model.compatibility == LocalModelCompatibility::Direct
+        }));
+        assert!(models.iter().any(|model| {
+            model.id == "hush-qwen-asr"
+                && model.compatibility == LocalModelCompatibility::AdapterRequired
+        }));
+        assert!(models.iter().any(|model| {
+            model.id == "hush-whisper-coreml"
+                && model.compatibility == LocalModelCompatibility::AdapterRequired
+        }));
+        assert_eq!(std::fs::read(qwen_path).unwrap(), b"foreign-qwen-weights");
+        assert_eq!(
+            std::fs::read(coreml_path).unwrap(),
+            b"foreign-coreml-weights"
+        );
+    }
+
+    #[test]
+    fn local_model_discovery_rejects_corrupt_neocap_model() {
+        let dir = tempdir().unwrap();
+        let neocap_models = dir.path().join("neocap");
+        let hush_assets = dir.path().join("hush");
+        std::fs::create_dir_all(&neocap_models).unwrap();
+        std::fs::create_dir_all(&hush_assets).unwrap();
+        std::fs::write(neocap_models.join("fixture.bin"), b"not-a-model").unwrap();
+
+        let models = discover_local_caption_models_with_manifests(
+            &neocap_models,
+            &hush_assets,
+            FIXTURE_MODEL_MANIFESTS,
+        );
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(
+            models[0].compatibility,
+            LocalModelCompatibility::Unsupported
+        );
+    }
+
+    #[test]
+    fn local_model_discovery_stops_before_verifying_after_deadline() {
+        let dir = tempdir().unwrap();
+        let neocap_models = dir.path().join("neocap");
+        let hush_assets = dir.path().join("hush");
+        std::fs::create_dir_all(&neocap_models).unwrap();
+        std::fs::create_dir_all(&hush_assets).unwrap();
+        std::fs::write(neocap_models.join("fixture.bin"), b"ggml").unwrap();
+
+        let models = discover_local_caption_models_with_manifests_before(
+            &neocap_models,
+            &hush_assets,
+            FIXTURE_MODEL_MANIFESTS,
+            Instant::now(),
+        );
+
+        assert!(models.is_empty());
+    }
+
+    #[test]
+    fn local_model_discovery_finds_recognized_assets_after_unrecognized_entries() {
+        let dir = tempdir().unwrap();
+        let neocap_models = dir.path().join("neocap");
+        let hush_assets = dir.path().join("hush");
+        std::fs::create_dir_all(&neocap_models).unwrap();
+        std::fs::create_dir_all(&hush_assets).unwrap();
+        for index in 0..=DISCOVERY_MAX_FILES {
+            std::fs::create_dir_all(hush_assets.join(format!("unrelated-{index}"))).unwrap();
+        }
+        let qwen_dir = hush_assets.join("speech-qwen-asr-0.6b-5bit-runtime-v1");
+        std::fs::create_dir_all(&qwen_dir).unwrap();
+        std::fs::write(qwen_dir.join("model.safetensors"), b"weights").unwrap();
+
+        let models = discover_local_caption_models_with_manifests(
+            &neocap_models,
+            &hush_assets,
+            FIXTURE_MODEL_MANIFESTS,
+        );
+
+        assert!(models.iter().any(|model| model.id == "hush-qwen-asr"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_model_discovery_ignores_symlinked_provider_assets() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let neocap_models = dir.path().join("neocap");
+        let hush_assets = dir.path().join("hush");
+        let foreign_asset = dir.path().join("foreign-qwen");
+        std::fs::create_dir_all(&neocap_models).unwrap();
+        std::fs::create_dir_all(&hush_assets).unwrap();
+        std::fs::create_dir_all(&foreign_asset).unwrap();
+        std::fs::write(foreign_asset.join("model.safetensors"), b"weights").unwrap();
+        symlink(
+            &foreign_asset,
+            hush_assets.join("speech-qwen-asr-0.6b-5bit-runtime-v1"),
+        )
+        .unwrap();
+
+        let models = discover_local_caption_models_with_manifests(
+            &neocap_models,
+            &hush_assets,
+            FIXTURE_MODEL_MANIFESTS,
+        );
+
+        assert!(models.is_empty());
     }
 
     #[test]

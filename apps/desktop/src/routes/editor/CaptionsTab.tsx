@@ -1,5 +1,6 @@
 import { Button } from "@cap/ui-solid";
 import { Select as KSelect } from "@kobalte/core/select";
+import { invoke } from "@tauri-apps/api/core";
 import { appLocalDataDir, join } from "@tauri-apps/api/path";
 import { exists } from "@tauri-apps/plugin-fs";
 import { cx } from "cva";
@@ -84,7 +85,25 @@ interface LanguageOption {
 	label: string;
 }
 
+type LocalModelCompatibility = "direct" | "adapterRequired" | "unsupported";
+
+interface DetectedLocalModel {
+	id: string;
+	provider: string;
+	displayName: string;
+	sizeBytes: number;
+	format: string;
+	compatibility: LocalModelCompatibility;
+	reason: string;
+}
+
 const MODEL_DOWNLOAD_STATUS_POLL_MS = 1000;
+
+function formatModelSize(sizeBytes: number) {
+	if (sizeBytes < 1024 * 1024)
+		return `${Math.max(1, Math.round(sizeBytes / 1024))} KB`;
+	return `${(sizeBytes / (1024 * 1024)).toFixed(0)} MB`;
+}
 
 const MODEL_OPTIONS: ModelOption[] = [
 	{
@@ -470,6 +489,11 @@ export function CaptionsTab(props: {
 	);
 	const [selectedLanguage, setSelectedLanguage] = createSignal("auto");
 	const [downloadedModels, setDownloadedModels] = createSignal<string[]>([]);
+	const [detectedLocalModels, setDetectedLocalModels] = createSignal<
+		DetectedLocalModel[]
+	>([]);
+	const [modelDiscoveryResolved, setModelDiscoveryResolved] =
+		createSignal(false);
 	const [deletingModel, setDeletingModel] = createSignal<string | null>(null);
 	const [downloadMessage, setDownloadMessage] = createSignal("");
 	let downloadStatusPoll: ReturnType<typeof setInterval> | undefined;
@@ -633,6 +657,16 @@ export function CaptionsTab(props: {
 	};
 
 	onMount(async () => {
+		try {
+			setDetectedLocalModels(
+				await invoke<DetectedLocalModel[]>("discover_local_caption_models"),
+			);
+		} catch (error) {
+			console.warn("Unable to inspect local caption models:", error);
+		} finally {
+			setModelDiscoveryResolved(true);
+		}
+
 		try {
 			unlistenDownloadProgress = await events.downloadProgress.listen(
 				(event) => {
@@ -957,8 +991,48 @@ export function CaptionsTab(props: {
 						</Show>
 
 						<p class="text-xs leading-relaxed text-gray-10">
-							One time download to your system. All captions are stored locally.
+							Local models are checked before download. All captions are stored
+							locally.
 						</p>
+
+						<Show when={detectedLocalModels().length > 0}>
+							<div class="space-y-2 rounded-lg border border-gray-3 bg-gray-2 p-3">
+								<p class="text-xs font-medium text-gray-12">
+									Local speech models found
+								</p>
+								<For each={detectedLocalModels()}>
+									{(model) => (
+										<div class="flex items-start justify-between gap-3 text-xs">
+											<div class="min-w-0">
+												<p class="font-medium text-gray-12">
+													{model.displayName}
+												</p>
+												<p class="text-gray-10">
+													{model.provider} · {model.format} · {model.reason}
+												</p>
+											</div>
+											<span
+												class={cx(
+													"shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium",
+													model.compatibility === "direct"
+														? "bg-green-3 text-green-11"
+														: "bg-yellow-3 text-yellow-11",
+												)}
+											>
+												{model.compatibility === "direct"
+													? "Ready"
+													: model.compatibility === "adapterRequired"
+														? "Adapter needed"
+														: "Unsupported"}
+											</span>
+											<span class="shrink-0 text-gray-10">
+												{formatModelSize(model.sizeBytes)}
+											</span>
+										</div>
+									)}
+								</For>
+							</div>
+						</Show>
 
 						<Subfield name="Language">
 							<KSelect<string>
@@ -1019,21 +1093,26 @@ export function CaptionsTab(props: {
 										<Button
 											class="w-full flex items-center justify-center gap-2"
 											onClick={downloadModel}
-											disabled={isDownloading()}
+											disabled={isDownloading() || !modelDiscoveryResolved()}
 										>
 											<Show
 												when={isDownloading()}
 												fallback={
-													<>
-														<IconLucideDownload class="size-4" />
-														Download{" "}
-														{
-															availableModelOptions().find(
-																(m) => m.name === selectedModel(),
-															)?.label
-														}{" "}
-														Model
-													</>
+													<Show
+														when={modelDiscoveryResolved()}
+														fallback={<>Checking local models…</>}
+													>
+														<span class="flex items-center gap-2">
+															<IconLucideDownload class="size-4" />
+															Download{" "}
+															{
+																availableModelOptions().find(
+																	(m) => m.name === selectedModel(),
+																)?.label
+															}{" "}
+															Model
+														</span>
+													</Show>
 												}
 											>
 												{`Downloading ${
