@@ -638,6 +638,39 @@ async fn acquire_shareable_content_for_target(
     ))
 }
 
+const SCREEN_CAPTURE_PERMISSION_REQUIRED_MESSAGE: &str = "Screen & System Audio Recording is not enabled for this NeoCap app. macOS authorizes each installed app build separately. Enable NeoCap in System Settings > Privacy & Security > Screen & System Audio Recording, then quit and reopen NeoCap before trying again.";
+
+fn is_screen_capture_permission_denied(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    normalized.contains("declined tccs")
+        || normalized.contains("screen capture permission")
+        || normalized.contains("not authorized to capture")
+        || normalized.contains("screen & system audio recording is not enabled")
+}
+
+fn screen_capture_preflight_error(error: impl std::fmt::Display) -> String {
+    let error = error.to_string();
+    if is_screen_capture_permission_denied(&error) {
+        SCREEN_CAPTURE_PERMISSION_REQUIRED_MESSAGE.to_string()
+    } else {
+        error
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn preflight_screen_capture_target(
+    capture_target: &ScreenCaptureTarget,
+) -> Result<(), String> {
+    if matches!(capture_target, ScreenCaptureTarget::CameraOnly) {
+        return Ok(());
+    }
+
+    acquire_shareable_content_for_target(capture_target)
+        .await
+        .map(|_| ())
+        .map_err(screen_capture_preflight_error)
+}
+
 #[cfg(target_os = "macos")]
 async fn read_recording_shareable_content() -> anyhow::Result<SendableShareableContent> {
     let content = cidre::sc::ShareableContent::current()
@@ -1501,6 +1534,22 @@ pub async fn start_recording(
 
     if is_camera_only {
         inputs.capture_system_audio = false;
+    }
+
+    // ScreenCaptureKit, not the legacy CoreGraphics preflight, is the authority
+    // for the actual recording path. Probe it before creating a project or
+    // hiding the picker so a TCC denial cannot create a failed empty `.cap`.
+    #[cfg(target_os = "macos")]
+    if let Err(error) = preflight_screen_capture_target(&inputs.capture_target).await {
+        if is_screen_capture_permission_denied(&error) {
+            permissions::request_permission(
+                app.clone(),
+                permissions::OSPermission::ScreenRecording,
+            )
+            .await;
+        }
+        notify_recording_start_failed(&app, &error);
+        return Err(error);
     }
 
     {
@@ -4359,6 +4408,27 @@ mod tests {
             ActorDoneDisposition::Failed {
                 error: "feed lost".to_string()
             }
+        );
+    }
+
+    #[test]
+    fn maps_screencapturekit_tcc_denials_to_an_actionable_message() {
+        let error = screen_capture_preflight_error(
+            "ReadShareableContent: The user declined TCCs for application, window, display capture",
+        );
+
+        assert_eq!(error, SCREEN_CAPTURE_PERMISSION_REQUIRED_MESSAGE);
+    }
+
+    #[test]
+    fn keeps_non_permission_screencapturekit_errors_intact() {
+        let error = screen_capture_preflight_error(
+            "ScreenCaptureKit shareable content missing target display 42. Available display ids: [1]",
+        );
+
+        assert_eq!(
+            error,
+            "ScreenCaptureKit shareable content missing target display 42. Available display ids: [1]"
         );
     }
 }

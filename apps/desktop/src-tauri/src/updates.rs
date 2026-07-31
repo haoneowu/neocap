@@ -9,8 +9,13 @@ use tracing::{info, warn};
 
 use crate::general_settings::GeneralSettingsStore;
 
-const UPDATE_ENDPOINT: &str =
-    "https://cdn.crabnebula.app/update/cap/cap/{{target}}/{{current_version}}";
+// Deliberately unset until NeoCap operates its own signed updater endpoint.
+const NEOCAP_UPDATE_ENDPOINT: Option<&str> = None;
+
+// NeoCap must never consume Cap's signed release feed. Keep the updater code
+// available for a future NeoCap-owned feed, but make every entry point inert
+// until that feed and signing key exist.
+const NEOCAP_IN_APP_UPDATER_ENABLED: bool = false;
 
 const FIRST_CHECK_DELAY: Duration = Duration::from_secs(60);
 const CHECK_INTERVAL: Duration = Duration::from_secs(2 * 60 * 60);
@@ -86,9 +91,11 @@ fn updater_target() -> String {
 }
 
 fn endpoint(channel: UpdateChannel) -> Result<Url, String> {
+    let endpoint = NEOCAP_UPDATE_ENDPOINT
+        .ok_or_else(|| "NeoCap in-app updates are not configured yet".to_string())?;
     let url = match channel {
-        UpdateChannel::Stable => UPDATE_ENDPOINT.to_string(),
-        UpdateChannel::Nightly => format!("{UPDATE_ENDPOINT}?channel=nightly"),
+        UpdateChannel::Stable => endpoint.to_string(),
+        UpdateChannel::Nightly => format!("{endpoint}?channel=nightly"),
     };
     Url::parse(&url).map_err(|e| e.to_string())
 }
@@ -147,6 +154,10 @@ fn pick_higher_version(a: Option<Update>, b: Option<Update>) -> Option<Update> {
 }
 
 pub async fn check(app: &AppHandle) -> Result<Option<Update>, String> {
+    if !NEOCAP_IN_APP_UPDATER_ENABLED {
+        return Ok(None);
+    }
+
     let channel = current_channel(app);
 
     let stable = check_channel(app, UpdateChannel::Stable, channel == UpdateChannel::Stable).await;
@@ -227,6 +238,13 @@ pub async fn updates_check(app: AppHandle) -> Result<Option<UpdateCheckResult>, 
 #[tauri::command]
 #[specta::specta]
 pub async fn updates_download_and_install(app: AppHandle) -> Result<(), String> {
+    if !NEOCAP_IN_APP_UPDATER_ENABLED {
+        return Err(
+            "NeoCap in-app updates are not configured yet. Install a verified NeoCap release manually."
+                .to_string(),
+        );
+    }
+
     let state = app.state::<UpdatesState>();
 
     let pending = match state.pending.lock().await.clone() {
@@ -272,6 +290,10 @@ pub fn updates_channel_changed(app: AppHandle) -> Result<(), String> {
 }
 
 pub fn spawn_background_loop(app: AppHandle) {
+    if !NEOCAP_IN_APP_UPDATER_ENABLED {
+        return;
+    }
+
     // Never auto-update dev builds.
     if cfg!(debug_assertions) {
         return;

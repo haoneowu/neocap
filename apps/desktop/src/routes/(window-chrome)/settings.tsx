@@ -1,6 +1,5 @@
-import { A, type RouteSectionProps, useNavigate } from "@solidjs/router";
+import { A, type RouteSectionProps } from "@solidjs/router";
 import { getVersion } from "@tauri-apps/api/app";
-import * as dialog from "@tauri-apps/plugin-dialog";
 import * as shell from "@tauri-apps/plugin-shell";
 import {
 	createSignal,
@@ -60,9 +59,7 @@ function SettingsContentSkeleton() {
 }
 
 export default function Settings(props: RouteSectionProps) {
-	const navigate = useNavigate();
 	const [version, setVersion] = createSignal<string | null>(null);
-	const [isCheckingForUpdates, setIsCheckingForUpdates] = createSignal(false);
 	const settingsItems = [
 		{
 			href: "general",
@@ -132,45 +129,6 @@ export default function Settings(props: RouteSectionProps) {
 			.catch((error) => console.error("Failed to load app version:", error));
 	});
 
-	const checkForUpdates = async () => {
-		setIsCheckingForUpdates(true);
-
-		try {
-			const update = await commands.updatesCheck();
-
-			if (!update) {
-				await dialog.message(
-					"You're already using the latest version of NeoCap.",
-					{
-						title: "No Update Available",
-						kind: "info",
-					},
-				);
-				return;
-			}
-
-			const shouldUpdate = await dialog.confirm(
-				`Version ${update.version} of NeoCap is available, would you like to install it?`,
-				{ title: "Update NeoCap", okLabel: "Update", cancelLabel: "Ignore" },
-			);
-
-			if (shouldUpdate) navigate("/update");
-		} catch (e) {
-			console.error("Failed to check for updates:", e);
-			const openDownload = await dialog
-				.confirm(
-					"Couldn't check for updates automatically. You can download the latest version of NeoCap from GitHub — your local data won't be lost.",
-					{ title: "Update NeoCap", okLabel: "Download", cancelLabel: "Later" },
-				)
-				.catch(() => false);
-			if (openDownload) {
-				await shell.open("https://github.com/haoneowu/neocap/releases");
-			}
-		} finally {
-			setIsCheckingForUpdates(false);
-		}
-	};
-
 	return (
 		<div class="cap-settings-shell flex-1 flex flex-row divide-x divide-gray-3 text-[0.875rem] leading-5 overflow-y-hidden">
 			<div
@@ -215,16 +173,9 @@ export default function Settings(props: RouteSectionProps) {
 									>
 										View previous versions
 									</button>
-									<button
-										type="button"
-										class="text-gray-11 hover:text-gray-12 underline transition-colors disabled:cursor-default disabled:opacity-50 disabled:hover:text-gray-11"
-										disabled={isCheckingForUpdates()}
-										onClick={checkForUpdates}
-									>
-										{isCheckingForUpdates()
-											? "Checking..."
-											: "Check for updates"}
-									</button>
+									<span class="text-gray-10">
+										Updates are published manually on GitHub.
+									</span>
 								</div>
 							</div>
 						)}

@@ -8,8 +8,13 @@
 	},
 	"plugins": {
 		"updater": {
-		"active": false,
-		"pubkey": ""
+			"active": false,
+			"pubkey": ""
+		},
+		"deep-link": {
+			"desktop": {
+				"schemes": ["neocap"]
+			}
 		}
 	},
 	"bundle": {

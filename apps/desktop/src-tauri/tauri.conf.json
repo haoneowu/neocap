@@ -1,8 +1,8 @@
 {
 	"$schema": "https://schema.tauri.app/config/2",
-	"productName": "NeoCap - Development",
-	"identifier": "com.haoneowu.neocap.dev",
-	"mainBinaryName": "NeoCap - Development",
+	"productName": "NeoCap Debug",
+	"identifier": "com.haoneowu.neocap.debug",
+	"mainBinaryName": "NeoCap Debug",
 	"build": {
 		"beforeDevCommand": "pnpm localdev",
 		"devUrl": "http://localhost:3002",
@@ -36,7 +36,7 @@
 		"updater": { "active": false, "pubkey": "" },
 		"deep-link": {
 			"desktop": {
-				"schemes": ["cap-desktop"]
+				"schemes": ["neocap-debug"]
 			}
 		}
 	},
