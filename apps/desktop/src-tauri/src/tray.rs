@@ -363,11 +363,8 @@ fn get_current_mode(app: &AppHandle) -> RecordingMode {
         .unwrap_or(RecordingMode::Studio)
 }
 
-fn should_use_minimal_onboarding_tray_menu(app: &AppHandle) -> bool {
-    if !app.webview_windows().contains_key("onboarding") {
-        return false;
-    }
-    !crate::permissions::do_permissions_check(false).necessary_granted()
+fn should_use_minimal_onboarding_tray_menu(_app: &AppHandle) -> bool {
+    false
 }
 
 pub(crate) struct TrayMenuCache {
@@ -965,7 +962,11 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
                 Ok(TrayItem::RequestPermissions) => {
                     let app = app.clone();
                     tokio::spawn(async move {
-                        let _ = ShowCapWindow::Onboarding.show(&app).await;
+                        let _ = ShowCapWindow::Main {
+                            init_target_mode: None,
+                        }
+                        .show(&app)
+                        .await;
                     });
                 }
                 _ => {}

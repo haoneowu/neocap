@@ -457,12 +457,6 @@ pub struct OSPermissionsCheck {
     pub accessibility: OSPermissionStatus,
 }
 
-impl OSPermissionsCheck {
-    pub fn necessary_granted(&self) -> bool {
-        self.screen_recording.permitted() && self.accessibility.permitted()
-    }
-}
-
 #[tauri::command(async)]
 #[specta::specta]
 pub fn do_permissions_check(_initial_check: bool) -> OSPermissionsCheck {

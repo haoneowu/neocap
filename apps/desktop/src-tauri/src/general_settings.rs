@@ -309,7 +309,7 @@ impl Default for GeneralSettingsStore {
             auto_create_shareable_link: false,
             enable_notifications: true,
             disable_auto_open_links: false,
-            has_completed_startup: false,
+            has_completed_startup: true,
             theme: AppTheme::System,
             commercial_license: None,
             last_version: None,
@@ -337,7 +337,7 @@ impl Default for GeneralSettingsStore {
             main_window_position: None,
             camera_window_position: None,
             camera_window_positions_by_monitor_name: BTreeMap::new(),
-            has_completed_onboarding: false,
+            has_completed_onboarding: true,
             enable_telemetry: true,
             out_of_process_muxer: cap_recording::DEFAULT_OUT_OF_PROCESS_MUXER,
             recordings_path: None,
@@ -609,5 +609,13 @@ mod tests {
 
         assert!(!changed);
         assert_eq!(excluded_windows.len(), len);
+    }
+
+    #[test]
+    fn defaults_skip_blocking_onboarding() {
+        let settings = GeneralSettingsStore::default();
+
+        assert!(settings.has_completed_startup);
+        assert!(settings.has_completed_onboarding);
     }
 }

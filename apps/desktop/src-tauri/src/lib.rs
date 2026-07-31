@@ -202,6 +202,11 @@ mod tests {
     }
 
     #[test]
+    fn permissions_can_never_block_startup_onboarding() {
+        assert!(!should_show_onboarding());
+    }
+
+    #[test]
     fn graphics_recovery_only_engages_for_gpu_init_deaths() {
         use crash_sentinel::UnexpectedTermination;
 
@@ -460,20 +465,8 @@ pub(crate) fn app_is_exiting(app: &AppHandle) -> bool {
     }
 }
 
-fn should_show_onboarding(app: &AppHandle) -> bool {
-    let settings = GeneralSettingsStore::get(app).ok().flatten();
-    let startup_completed = settings
-        .as_ref()
-        .map(|s| s.has_completed_startup)
-        .unwrap_or(false);
-    let onboarding_completed = settings
-        .as_ref()
-        .map(|s| s.has_completed_onboarding)
-        .unwrap_or(false);
-
-    !startup_completed
-        || !onboarding_completed
-        || !permissions::do_permissions_check(false).necessary_granted()
+fn should_show_onboarding() -> bool {
+    false
 }
 
 #[cfg(target_os = "macos")]
@@ -5402,7 +5395,7 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
             tokio::spawn({
                 let app = app.clone();
                 async move {
-                    if should_show_onboarding(&app) {
+                    if should_show_onboarding() {
                         println!("Showing onboarding");
                         let _ = ShowCapWindow::Onboarding.show(&app).await;
                     } else {
@@ -5963,7 +5956,7 @@ fn handle_run_event(_handle: &AppHandle, event: tauri::RunEvent) {
     match event {
         #[cfg(target_os = "macos")]
         tauri::RunEvent::Reopen { .. } => {
-            let should_focus_onboarding = should_show_onboarding(_handle);
+            let should_focus_onboarding = should_show_onboarding();
 
             if should_focus_onboarding
                 && let Some(onboarding) = CapWindowId::Onboarding.get(_handle)

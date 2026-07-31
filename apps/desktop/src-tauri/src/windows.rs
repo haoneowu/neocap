@@ -1485,10 +1485,6 @@ impl ShowCapWindow {
         if !matches!(self, Self::Camera { .. } | Self::InProgressRecording { .. })
             && let Some(window) = self.id(app).get(app)
         {
-            if matches!(self, Self::Main { .. }) && crate::should_show_onboarding(app) {
-                return Box::pin(Self::Onboarding.show(app)).await;
-            }
-
             #[cfg(target_os = "macos")]
             if matches!(self, Self::Main { .. }) && !app.state::<MainWindowReadyState>().is_ready()
             {
@@ -1569,10 +1565,6 @@ impl ShowCapWindow {
 
         let window = match self {
             Self::Main { init_target_mode } => {
-                if !permissions::do_permissions_check(false).necessary_granted() {
-                    return Box::pin(Self::Onboarding.show(app)).await;
-                }
-
                 let title = CapWindowId::Main.title();
                 let should_protect = should_protect_window(app, &title);
 
