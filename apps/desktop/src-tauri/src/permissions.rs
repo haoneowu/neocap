@@ -3,14 +3,14 @@ use serde::{Deserialize, Serialize};
 #[cfg(target_os = "macos")]
 use crate::{general_settings::GeneralSettingsStore, windows::CapWindowId};
 #[cfg(target_os = "macos")]
-use cidre::{av, sc};
+use cidre::av;
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
 #[cfg(target_os = "macos")]
 use std::{
     future::Future,
     str::FromStr,
-    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicU32, AtomicU64, Ordering},
     time::Duration,
 };
 #[cfg(target_os = "macos")]
@@ -21,8 +21,6 @@ use tracing::instrument;
 static MACOS_DOCK_VISIBILITY_SYNC_GENERATION: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "macos")]
 static MACOS_PENDING_PANEL_WINDOWS: AtomicU32 = AtomicU32::new(0);
-#[cfg(target_os = "macos")]
-static MACOS_SCK_PERMISSION_MISMATCH_LOGGED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "macos")]
 pub(crate) struct MacosPanelWindowActivationGuard {
@@ -285,40 +283,11 @@ fn macos_permission_status(permission: &OSPermission, initial_check: bool) -> OS
 
 #[cfg(target_os = "macos")]
 fn macos_screen_recording_available() -> bool {
-    if !scap_screencapturekit::has_permission() {
-        return false;
-    }
-
-    let future = async {
-        match sc::ShareableContent::current().await {
-            Ok(content) => {
-                let display_count = content.displays().len();
-                if display_count == 0
-                    && !MACOS_SCK_PERMISSION_MISMATCH_LOGGED.swap(true, Ordering::AcqRel)
-                {
-                    tracing::debug!(
-                        window_count = content.windows().len(),
-                        application_count = content.apps().len(),
-                        "ScreenCaptureKit returned no displays despite CoreGraphics screen-recording permission"
-                    );
-                }
-                display_count > 0
-            }
-            Err(error) => {
-                tracing::debug!(
-                    error = %error,
-                    "ScreenCaptureKit shareable content unavailable during permission check"
-                );
-                false
-            }
-        }
-    };
-
-    if tokio::runtime::Handle::try_current().is_ok() {
-        tokio::task::block_in_place(|| tauri::async_runtime::block_on(future))
-    } else {
-        tauri::async_runtime::block_on(future)
-    }
+    // TCC's CoreGraphics preflight is the permission authority. ScreenCaptureKit
+    // content enumeration is intentionally deferred to the capture path: it can
+    // transiently return no displays while a user is switching Spaces/displays,
+    // which previously stranded already-authorized users in onboarding.
+    scap_screencapturekit::has_permission()
 }
 
 #[cfg(target_os = "macos")]
@@ -486,12 +455,6 @@ pub struct OSPermissionsCheck {
     pub microphone: OSPermissionStatus,
     pub camera: OSPermissionStatus,
     pub accessibility: OSPermissionStatus,
-}
-
-impl OSPermissionsCheck {
-    pub fn necessary_granted(&self) -> bool {
-        self.screen_recording.permitted() && self.accessibility.permitted()
-    }
 }
 
 #[tauri::command(async)]

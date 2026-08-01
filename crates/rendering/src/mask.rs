@@ -1,5 +1,6 @@
 use cap_project::{
-    MaskKind, MaskScalarKeyframe, MaskSegment, MaskVectorKeyframe, XY, mask_effect_contract,
+    MaskCoordinateSpace, MaskKind, MaskScalarKeyframe, MaskSegment, MaskVectorKeyframe, XY,
+    mask_effect_contract,
 };
 
 use crate::{MaskRenderMode, PreparedMask};
@@ -67,14 +68,49 @@ fn interpolate_scalar(base: f64, keys: &[MaskScalarKeyframe], time: f64) -> f64 
     sorted.last().map(|k| k.value).unwrap_or(base)
 }
 
-pub fn interpolate_masks(
+/// Produces legacy final-output masks. These retain their original canvas
+/// coordinate meaning for existing projects.
+pub fn interpolate_output_masks(
     output_size: XY<u32>,
     frame_time: f64,
     segments: &[MaskSegment],
 ) -> Vec<PreparedMask> {
+    interpolate_masks_for_space(
+        output_size,
+        frame_time,
+        segments,
+        MaskCoordinateSpace::Output,
+    )
+}
+
+/// Produces source-space masks for new `displayContent` segments. The result
+/// is applied directly to the decoded display texture before crop, zoom, and
+/// split layout, so it follows the protected source pixels by construction.
+pub fn interpolate_display_content_masks(
+    source_size: XY<u32>,
+    frame_time: f64,
+    segments: &[MaskSegment],
+) -> Vec<PreparedMask> {
+    interpolate_masks_for_space(
+        source_size,
+        frame_time,
+        segments,
+        MaskCoordinateSpace::DisplayContent,
+    )
+}
+
+fn interpolate_masks_for_space(
+    output_size: XY<u32>,
+    frame_time: f64,
+    segments: &[MaskSegment],
+    coordinate_space: MaskCoordinateSpace,
+) -> Vec<PreparedMask> {
     let mut prepared = Vec::new();
 
-    for segment in segments.iter().filter(|s| s.enabled) {
+    for segment in segments
+        .iter()
+        .filter(|s| s.enabled && s.coordinate_space == coordinate_space)
+    {
         if frame_time < segment.start || frame_time > segment.end {
             continue;
         }
@@ -108,7 +144,6 @@ pub fn interpolate_masks(
         };
 
         let clamped_size = XY::new(size.x.clamp(0.01, 2.0), size.y.clamp(0.01, 2.0));
-
         let min_axis = clamped_size.x.min(clamped_size.y).abs();
         let segment_feather = if let MaskKind::Highlight = segment.mask_type {
             0.0
@@ -117,11 +152,20 @@ pub fn interpolate_masks(
         };
         let feather = (min_axis * 0.5 * segment_feather.max(0.0)).max(0.0001) as f32;
 
-        prepared.push(PreparedMask {
-            center: XY::new(
+        let prepared_center = match coordinate_space {
+            // Preserve historical output-canvas behaviour for saved projects.
+            MaskCoordinateSpace::Output => XY::new(
                 position.x.clamp(0.0, 1.0) as f32,
                 position.y.clamp(0.0, 1.0) as f32,
             ),
+            // A source region can move partially outside the output during a
+            // zoom/pan. Keep its real geometry so the shader clips it instead
+            // of moving the mask back over unrelated content.
+            MaskCoordinateSpace::DisplayContent => XY::new(position.x as f32, position.y as f32),
+        };
+
+        prepared.push(PreparedMask {
+            center: prepared_center,
             size: XY::new(
                 clamped_size.x.clamp(0.0, 2.0) as f32,
                 clamped_size.y.clamp(0.0, 2.0) as f32,
@@ -183,6 +227,7 @@ mod tests {
             track: 0,
             enabled: true,
             mask_type: MaskKind::Sensitive,
+            coordinate_space: MaskCoordinateSpace::Output,
             center: XY::new(0.5, 0.5),
             size: XY::new(0.25, 0.25),
             feather: 0.1,
@@ -197,9 +242,11 @@ mod tests {
     #[test]
     fn sensitive_mask_effect_scales_with_output_height() {
         let segment = sample_segment();
-        let smaller = interpolate_masks(XY::new(872, 720), 1.0, std::slice::from_ref(&segment));
-        let low = interpolate_masks(XY::new(1308, 1080), 1.0, std::slice::from_ref(&segment));
-        let high = interpolate_masks(XY::new(2616, 2160), 1.0, &[segment]);
+        let smaller =
+            interpolate_output_masks(XY::new(872, 720), 1.0, std::slice::from_ref(&segment));
+        let low =
+            interpolate_output_masks(XY::new(1308, 1080), 1.0, std::slice::from_ref(&segment));
+        let high = interpolate_output_masks(XY::new(2616, 2160), 1.0, &[segment]);
 
         assert_eq!(smaller.len(), 1);
         assert_eq!(low.len(), 1);
@@ -218,7 +265,7 @@ mod tests {
             value: 0.01,
         });
 
-        let masks = interpolate_masks(XY::new(1920, 1080), 1.0, &[segment]);
+        let masks = interpolate_output_masks(XY::new(1920, 1080), 1.0, &[segment]);
 
         assert_eq!(masks[0].opacity, 1.0);
         assert_eq!(masks[0].mode, MaskRenderMode::Pixelate);
@@ -235,7 +282,7 @@ mod tests {
             let mut segment = sample_segment();
             segment.pixelation = stored_effect;
 
-            let masks = interpolate_masks(XY::new(1920, 1080), 1.0, &[segment]);
+            let masks = interpolate_output_masks(XY::new(1920, 1080), 1.0, &[segment]);
 
             assert_eq!(masks[0].mode, expected_mode);
             assert_eq!(masks[0].effect_size, expected_size);
@@ -248,9 +295,41 @@ mod tests {
         let mut segment = sample_segment();
         segment.pixelation = 0.0;
 
-        let masks = interpolate_masks(XY::new(1920, 1080), 1.0, &[segment]);
+        let masks = interpolate_output_masks(XY::new(1920, 1080), 1.0, &[segment]);
 
         assert_eq!(masks[0].mode, MaskRenderMode::Pixelate);
         assert_eq!(masks[0].effect_size, 16.0);
+    }
+
+    #[test]
+    fn display_content_mask_stays_in_source_space_before_crop_and_zoom() {
+        let mut segment = sample_segment();
+        segment.coordinate_space = MaskCoordinateSpace::DisplayContent;
+        segment.center = XY::new(0.25, 0.75);
+        segment.size = XY::new(0.2, 0.1);
+        let masks = interpolate_display_content_masks(XY::new(1920, 1080), 1.0, &[segment]);
+
+        assert_eq!(masks.len(), 1);
+        assert_eq!(masks[0].center, XY::new(0.25, 0.75));
+        assert_eq!(masks[0].size, XY::new(0.2, 0.1));
+    }
+
+    #[test]
+    fn legacy_output_mask_ignores_display_placement() {
+        let segment = sample_segment();
+        let masks = interpolate_output_masks(XY::new(1920, 1080), 1.0, &[segment]);
+
+        assert_eq!(masks[0].center, XY::new(0.5, 0.5));
+        assert_eq!(masks[0].size, XY::new(0.25, 0.25));
+    }
+
+    #[test]
+    fn display_content_masks_do_not_leak_into_legacy_output_pass() {
+        let mut segment = sample_segment();
+        segment.coordinate_space = MaskCoordinateSpace::DisplayContent;
+        segment.center = XY::new(0.0, 0.5);
+        let masks = interpolate_output_masks(XY::new(1920, 1080), 1.0, &[segment]);
+
+        assert!(masks.is_empty());
     }
 }

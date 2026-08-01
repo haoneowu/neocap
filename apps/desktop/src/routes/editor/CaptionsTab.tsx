@@ -1,5 +1,6 @@
 import { Button } from "@cap/ui-solid";
 import { Select as KSelect } from "@kobalte/core/select";
+import { invoke } from "@tauri-apps/api/core";
 import { appLocalDataDir, join } from "@tauri-apps/api/path";
 import { exists } from "@tauri-apps/plugin-fs";
 import { cx } from "cva";
@@ -26,7 +27,7 @@ import {
 	type EditorCaptionSettings,
 } from "~/store/captions";
 import type { OrganizationBrandColorSwatch } from "~/utils/organization-branding";
-import { commands, events } from "~/utils/tauri";
+import { type CaptionWord, commands, events } from "~/utils/tauri";
 import IconCapChevronDown from "~icons/cap/chevron-down";
 import IconCapCircleCheck from "~icons/cap/circle-check";
 import IconLucideDownload from "~icons/lucide/download";
@@ -42,10 +43,12 @@ import {
 	mapEditedTimeToSource,
 	PARAKEET_DIR_MODELS,
 	resolveCaptionModel,
+	segmentCaptionsForShortForm,
 	sourceCaptionId,
 	supportsParakeetTranscription,
 	syncCaptionWordsWithText,
 	transcribeEditorCaptions,
+	updateCaptionWordTiming,
 } from "./captions";
 import { useEditorContext } from "./context";
 import {
@@ -82,36 +85,54 @@ interface LanguageOption {
 	label: string;
 }
 
+type LocalModelCompatibility = "direct" | "adapterRequired" | "unsupported";
+
+interface DetectedLocalModel {
+	id: string;
+	provider: string;
+	displayName: string;
+	sizeBytes: number;
+	format: string;
+	compatibility: LocalModelCompatibility;
+	reason: string;
+}
+
 const MODEL_DOWNLOAD_STATUS_POLL_MS = 1000;
+
+function formatModelSize(sizeBytes: number) {
+	if (sizeBytes < 1024 * 1024)
+		return `${Math.max(1, Math.round(sizeBytes / 1024))} KB`;
+	return `${(sizeBytes / (1024 * 1024)).toFixed(0)} MB`;
+}
 
 const MODEL_OPTIONS: ModelOption[] = [
 	{
-		name: "best",
-		label: "Recommended",
-		modelName: "parakeet-tdt-0.6b-v3 int8",
-		size: "~640MB",
-		description: "Best balance for most recordings",
-	},
-	{
-		name: "best-max",
-		label: "High Accuracy",
-		modelName: "parakeet-tdt-0.6b-v3",
-		size: "~2.4GB",
-		description: "Larger download, higher accuracy",
-	},
-	{
 		name: "small",
 		modelName: "whisper.cpp small",
-		label: "Small",
+		label: "Chinese / Multilingual",
 		size: "466MB",
-		description: "Smallest download",
+		description: "Recommended local model for Chinese captions",
 	},
 	{
 		name: "medium",
 		modelName: "whisper.cpp medium",
-		label: "Medium",
+		label: "Chinese High Accuracy",
 		size: "1.5GB",
-		description: "Slower, more accurate",
+		description: "Slower, more accurate local Chinese transcription",
+	},
+	{
+		name: "best",
+		label: "Fast (Experimental)",
+		modelName: "parakeet-tdt-0.6b-v3 int8",
+		size: "~640MB",
+		description: "Fast local transcription; not the default for Chinese",
+	},
+	{
+		name: "best-max",
+		label: "Fast High Accuracy (Experimental)",
+		modelName: "parakeet-tdt-0.6b-v3",
+		size: "~2.4GB",
+		description: "Larger Parakeet model; not the default for Chinese",
 	},
 ];
 
@@ -159,10 +180,12 @@ const STYLE_PRESET_KEYS = new Set<keyof EditorCaptionSettings>([
 	"outlineColor",
 	"highlightColor",
 	"activeWordHighlight",
+	"wordAnimation",
 	"highlightStyle",
 	"animation",
 	"uppercase",
 	"fadeDuration",
+	"position",
 ]);
 
 function hexToRgba(hex: string, opacityPercent: number) {
@@ -305,11 +328,93 @@ export function CaptionsTab(props: {
 		);
 	};
 
+	const updateSelectedCaptionWordTiming = (
+		wordIndex: number,
+		update: Partial<Pick<CaptionWord, "start" | "end">>,
+	) => {
+		const index = selectedCaptionIndex();
+		if (index < 0) return;
+
+		setProject(
+			produce((currentProject: typeof project) => {
+				const timeline = currentProject.timeline;
+				const timelineSegment = timeline?.captionSegments?.[index];
+				if (!timeline || !timelineSegment || !timelineSegment.words?.length)
+					return;
+
+				const beforeWord = timelineSegment.words[wordIndex];
+				if (!beforeWord) return;
+
+				timelineSegment.words = updateCaptionWordTiming(
+					timelineSegment.words,
+					wordIndex,
+					update,
+					timelineSegment.start,
+					timelineSegment.end,
+				);
+				const editedWord = timelineSegment.words[wordIndex];
+				if (!editedWord) return;
+
+				// The visible track is output-time; captions are saved as source-time
+				// masters. Identify this word by its *pre-edit* source timestamp so
+				// repeated text (for example “的 的”) stays unambiguous.
+				const source = currentProject.captions?.segments?.find(
+					(segment) => segment.id === sourceCaptionId(timelineSegment.id),
+				);
+				if (!source?.words?.length) return;
+
+				const previousSourceStart = mapEditedTimeToSource(
+					beforeWord.start,
+					timeline.segments,
+					editorInstance.recordings.segments,
+				);
+				const nextSourceStart = mapEditedTimeToSource(
+					editedWord.start,
+					timeline.segments,
+					editorInstance.recordings.segments,
+				);
+				const nextSourceEnd = mapEditedTimeToSource(
+					editedWord.end,
+					timeline.segments,
+					editorInstance.recordings.segments,
+				);
+				if (
+					previousSourceStart === null ||
+					nextSourceStart === null ||
+					nextSourceEnd === null
+				)
+					return;
+
+				let sourceWordIndex = -1;
+				let closestDistance = Number.POSITIVE_INFINITY;
+				for (const [candidateIndex, candidate] of source.words.entries()) {
+					const distance = Math.abs(candidate.start - previousSourceStart);
+					if (distance < closestDistance) {
+						sourceWordIndex = candidateIndex;
+						closestDistance = distance;
+					}
+				}
+				if (sourceWordIndex < 0 || closestDistance > 0.02) return;
+
+				source.words = updateCaptionWordTiming(
+					source.words,
+					sourceWordIndex,
+					{ start: nextSourceStart, end: nextSourceEnd },
+					source.start,
+					source.end,
+				);
+			}),
+		);
+	};
+
 	const getSetting = <K extends keyof EditorCaptionSettings>(
 		key: K,
 	): NonNullable<EditorCaptionSettings[K]> =>
-		(project?.captions?.settings?.[key] ??
-			defaultCaptionSettings[key]) as NonNullable<EditorCaptionSettings[K]>;
+		((
+			project?.captions?.settings as Partial<EditorCaptionSettings> | undefined
+		)?.[key] ?? defaultCaptionSettings[key]) as NonNullable<
+			EditorCaptionSettings[K]
+		>;
 
 	const updateCaptionSetting = <K extends keyof EditorCaptionSettings>(
 		key: K,
@@ -339,6 +444,7 @@ export function CaptionsTab(props: {
 			"settings",
 			produce((settings) => {
 				Object.assign(settings, preset.style);
+				if (preset.style.position) settings.manualPosition = null;
 				settings.preset = preset.id;
 			}),
 		);
@@ -383,6 +489,11 @@ export function CaptionsTab(props: {
 	);
 	const [selectedLanguage, setSelectedLanguage] = createSignal("auto");
 	const [downloadedModels, setDownloadedModels] = createSignal<string[]>([]);
+	const [detectedLocalModels, setDetectedLocalModels] = createSignal<
+		DetectedLocalModel[]
+	>([]);
+	const [modelDiscoveryResolved, setModelDiscoveryResolved] =
+		createSignal(false);
 	const [deletingModel, setDeletingModel] = createSignal<string | null>(null);
 	const [downloadMessage, setDownloadMessage] = createSignal("");
 	let downloadStatusPoll: ReturnType<typeof setInterval> | undefined;
@@ -546,6 +657,16 @@ export function CaptionsTab(props: {
 	};
 
 	onMount(async () => {
+		try {
+			setDetectedLocalModels(
+				await invoke<DetectedLocalModel[]>("discover_local_caption_models"),
+			);
+		} catch (error) {
+			console.warn("Unable to inspect local caption models:", error);
+		} finally {
+			setModelDiscoveryResolved(true);
+		}
+
 		try {
 			unlistenDownloadProgress = await events.downloadProgress.listen(
 				(event) => {
@@ -723,7 +844,7 @@ export function CaptionsTab(props: {
 					produce((p) => {
 						applyCaptionResultToProject(
 							p,
-							result.segments,
+							segmentCaptionsForShortForm(result.segments),
 							editorInstance.recordings.segments,
 							editorInstance.recordingDuration,
 						);
@@ -870,8 +991,48 @@ export function CaptionsTab(props: {
 						</Show>
 
 						<p class="text-xs leading-relaxed text-gray-10">
-							One time download to your system. All captions are stored locally.
+							Local models are checked before download. All captions are stored
+							locally.
 						</p>
+
+						<Show when={detectedLocalModels().length > 0}>
+							<div class="space-y-2 rounded-lg border border-gray-3 bg-gray-2 p-3">
+								<p class="text-xs font-medium text-gray-12">
+									Local speech models found
+								</p>
+								<For each={detectedLocalModels()}>
+									{(model) => (
+										<div class="flex items-start justify-between gap-3 text-xs">
+											<div class="min-w-0">
+												<p class="font-medium text-gray-12">
+													{model.displayName}
+												</p>
+												<p class="text-gray-10">
+													{model.provider} · {model.format} · {model.reason}
+												</p>
+											</div>
+											<span
+												class={cx(
+													"shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium",
+													model.compatibility === "direct"
+														? "bg-green-3 text-green-11"
+														: "bg-yellow-3 text-yellow-11",
+												)}
+											>
+												{model.compatibility === "direct"
+													? "Ready"
+													: model.compatibility === "adapterRequired"
+														? "Adapter needed"
+														: "Unsupported"}
+											</span>
+											<span class="shrink-0 text-gray-10">
+												{formatModelSize(model.sizeBytes)}
+											</span>
+										</div>
+									)}
+								</For>
+							</div>
+						</Show>
 
 						<Subfield name="Language">
 							<KSelect<string>
@@ -932,21 +1093,26 @@ export function CaptionsTab(props: {
 										<Button
 											class="w-full flex items-center justify-center gap-2"
 											onClick={downloadModel}
-											disabled={isDownloading()}
+											disabled={isDownloading() || !modelDiscoveryResolved()}
 										>
 											<Show
 												when={isDownloading()}
 												fallback={
-													<>
-														<IconLucideDownload class="size-4" />
-														Download{" "}
-														{
-															availableModelOptions().find(
-																(m) => m.name === selectedModel(),
-															)?.label
-														}{" "}
-														Model
-													</>
+													<Show
+														when={modelDiscoveryResolved()}
+														fallback={<>Checking local models…</>}
+													>
+														<span class="flex items-center gap-2">
+															<IconLucideDownload class="size-4" />
+															Download{" "}
+															{
+																availableModelOptions().find(
+																	(m) => m.name === selectedModel(),
+																)?.label
+															}{" "}
+															Model
+														</span>
+													</Show>
 												}
 											>
 												{`Downloading ${
@@ -1160,6 +1326,26 @@ export function CaptionsTab(props: {
 										working on a fix for this and it will be released in
 										upcoming versions.
 									</p>
+								</div>
+
+								<div class="flex items-center justify-between">
+									<div class="flex flex-col gap-0.5">
+										<span class="text-gray-11 text-sm">
+											Word-Cued Animation
+										</span>
+										<span class="text-xs text-gray-10">
+											Restart the bounce or pop at each timed word.
+										</span>
+									</div>
+									<Toggle
+										checked={getSetting("wordAnimation")}
+										onChange={(checked) =>
+											updateCaptionSetting("wordAnimation", checked)
+										}
+										disabled={
+											!hasCaptions() || getSetting("animation") === "none"
+										}
+									/>
 								</div>
 
 								<Show when={getSetting("activeWordHighlight")}>
@@ -1524,6 +1710,58 @@ export function CaptionsTab(props: {
 														}
 													/>
 												</Subfield>
+												<Show when={(seg().words?.length ?? 0) > 0}>
+													<div class="space-y-2">
+														<p class="text-xs text-gray-10">
+															Word timing is constrained to this phrase and its
+															neighbouring words.
+														</p>
+														<For each={seg().words ?? []}>
+															{(word, wordIndex) => (
+																<div class="grid grid-cols-[minmax(0,1fr)_5.5rem_5.5rem] items-center gap-2">
+																	<span
+																		class="truncate text-sm text-gray-12"
+																		title={word.text}
+																	>
+																		{word.text}
+																	</span>
+																	<Input
+																		type="number"
+																		value={word.start.toFixed(2)}
+																		step="0.01"
+																		aria-label={`Start time for ${word.text}`}
+																		onChange={(event) =>
+																			updateSelectedCaptionWordTiming(
+																				wordIndex(),
+																				{
+																					start: Number.parseFloat(
+																						event.target.value,
+																					),
+																				},
+																			)
+																		}
+																	/>
+																	<Input
+																		type="number"
+																		value={word.end.toFixed(2)}
+																		step="0.01"
+																		aria-label={`End time for ${word.text}`}
+																		onChange={(event) =>
+																			updateSelectedCaptionWordTiming(
+																				wordIndex(),
+																				{
+																					end: Number.parseFloat(
+																						event.target.value,
+																					),
+																				},
+																			)
+																		}
+																	/>
+																</div>
+															)}
+														</For>
+													</div>
+												</Show>
 												<Subfield name="Fade Duration Override">
 													<Slider
 														value={[

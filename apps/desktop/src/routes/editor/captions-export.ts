@@ -4,42 +4,29 @@ import type {
 	TimelineSegment,
 } from "~/utils/tauri";
 import {
-	getCaptionTextFromWords,
-	mapCaptionsToEditedTimeline,
-} from "./captions";
+	type CaptionExportCue,
+	captionExportDefaultPath,
+	formatCaptionCuesAsSrt,
+	formatCaptionCuesAsVtt,
+	normalizeCaptionExportCues,
+} from "./caption-export-core";
+import { getCaptionTextFromWords } from "./caption-text";
+import { mapCaptionsToEditedTimeline } from "./captions";
 
-export type CaptionExportFormat = "srt" | "vtt";
-
-export interface CaptionExportCue {
-	startMs: number;
-	endMs: number;
-	text: string;
-}
+export {
+	type CaptionExportCue,
+	type CaptionExportFormat,
+	captionExportDefaultPath,
+	formatCaptionCues,
+	formatCaptionCuesAsSrt,
+	formatCaptionCuesAsVtt,
+	normalizeCaptionExportCues,
+} from "./caption-export-core";
 
 const DOUBLE_QUOTE = String.fromCharCode(34);
-const INVALID_FILE_NAME_CHARS = new Set([
-	"<",
-	">",
-	":",
-	DOUBLE_QUOTE,
-	"/",
-	"\\",
-	"|",
-	"?",
-	"*",
-]);
 
 function millisecondsFromSeconds(seconds: number) {
 	return Math.max(0, Math.round(seconds * 1000));
-}
-
-function formatTimestamp(ms: number, separator: "," | ".") {
-	const hours = Math.floor(ms / 3_600_000);
-	const minutes = Math.floor((ms % 3_600_000) / 60_000);
-	const seconds = Math.floor((ms % 60_000) / 1000);
-	const milliseconds = ms % 1000;
-
-	return `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}${separator}${milliseconds.toString().padStart(3, "0")}`;
 }
 
 function textFromCaptionSegment(segment: CaptionSegment) {
@@ -74,13 +61,6 @@ function normalizeCueText(text: string) {
 		.trim();
 }
 
-function normalizeVttCueText(text: string) {
-	return text
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;");
-}
-
 function cueFromCaptionSegment(
 	segment: CaptionSegment,
 ): CaptionExportCue | null {
@@ -108,65 +88,11 @@ export function createCaptionExportCues(
 	timelineSegments: TimelineSegment[],
 	recordingSegments: SegmentRecordings[],
 ): CaptionExportCue[] {
-	return mapCaptionsToEditedTimeline(
-		segments,
-		timelineSegments,
-		recordingSegments,
-	)
-		.map(cueFromCaptionSegment)
-		.filter((cue): cue is CaptionExportCue => cue !== null)
-		.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
-}
-
-export function formatCaptionCuesAsSrt(cues: CaptionExportCue[]) {
-	if (cues.length === 0) return "";
-
-	return `${cues
-		.map(
-			(cue, index) =>
-				`${index + 1}\n${formatTimestamp(cue.startMs, ",")} --> ${formatTimestamp(cue.endMs, ",")}\n${cue.text}`,
-		)
-		.join("\n\n")}\n`;
-}
-
-export function formatCaptionCuesAsVtt(cues: CaptionExportCue[]) {
-	if (cues.length === 0) return "WEBVTT\n";
-
-	return `WEBVTT\n\n${cues
-		.map(
-			(cue, index) =>
-				`${index + 1}\n${formatTimestamp(cue.startMs, ".")} --> ${formatTimestamp(cue.endMs, ".")}\n${normalizeVttCueText(cue.text)}`,
-		)
-		.join("\n\n")}\n`;
-}
-
-export function formatCaptionCues(
-	cues: CaptionExportCue[],
-	format: CaptionExportFormat,
-) {
-	return format === "srt"
-		? formatCaptionCuesAsSrt(cues)
-		: formatCaptionCuesAsVtt(cues);
-}
-
-export function captionExportDefaultPath(
-	name: string,
-	format: CaptionExportFormat,
-) {
-	const cleanedName = name
-		.trim()
-		.split("")
-		.map((char) => {
-			const code = char.charCodeAt(0);
-			return INVALID_FILE_NAME_CHARS.has(char) || code < 32 ? "-" : char;
-		})
-		.join("")
-		.replace(/\s+/g, " ")
-		.replace(/\.+$/g, "")
-		.slice(0, 120)
-		.trim();
-
-	return `${cleanedName || "captions"}.${format}`;
+	return normalizeCaptionExportCues(
+		mapCaptionsToEditedTimeline(segments, timelineSegments, recordingSegments)
+			.map(cueFromCaptionSegment)
+			.filter((cue): cue is CaptionExportCue => cue !== null),
+	);
 }
 
 if (import.meta.vitest) {

@@ -202,6 +202,11 @@ mod tests {
     }
 
     #[test]
+    fn permissions_can_never_block_startup_onboarding() {
+        assert!(!should_show_onboarding());
+    }
+
+    #[test]
     fn graphics_recovery_only_engages_for_gpu_init_deaths() {
         use crash_sentinel::UnexpectedTermination;
 
@@ -460,20 +465,8 @@ pub(crate) fn app_is_exiting(app: &AppHandle) -> bool {
     }
 }
 
-fn should_show_onboarding(app: &AppHandle) -> bool {
-    let settings = GeneralSettingsStore::get(app).ok().flatten();
-    let startup_completed = settings
-        .as_ref()
-        .map(|s| s.has_completed_startup)
-        .unwrap_or(false);
-    let onboarding_completed = settings
-        .as_ref()
-        .map(|s| s.has_completed_onboarding)
-        .unwrap_or(false);
-
-    !startup_completed
-        || !onboarding_completed
-        || !permissions::do_permissions_check(false).necessary_granted()
+fn should_show_onboarding() -> bool {
+    false
 }
 
 #[cfg(target_os = "macos")]
@@ -2960,6 +2953,9 @@ struct EditorStateChanged {
 #[derive(Serialize, specta::Type, tauri_specta::Event, Debug, Clone, PartialEq)]
 pub(crate) struct FrameLayoutEvent {
     display: [f32; 4],
+    display_content: [f32; 4],
+    display_crop_bounds: [f32; 4],
+    display_frame_size: [f32; 2],
     camera: Option<[f32; 4]>,
     output_width: u32,
     output_height: u32,
@@ -2969,6 +2965,9 @@ impl From<cap_editor::FrameLayout> for FrameLayoutEvent {
     fn from(layout: cap_editor::FrameLayout) -> Self {
         Self {
             display: layout.display,
+            display_content: layout.display_content,
+            display_crop_bounds: layout.display_crop_bounds,
+            display_frame_size: layout.display_frame_size,
             camera: layout.camera,
             output_width: layout.output_size[0],
             output_height: layout.output_size[1],
@@ -4955,10 +4954,10 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
             destroy_camera_window,
             refresh_camera_feed,
             captions::create_dir,
-            captions::save_model_file,
             captions::transcribe_audio,
             captions::save_captions,
             captions::load_captions,
+            captions::discover_local_caption_models,
             captions::get_model_download_status,
             captions::download_whisper_model,
             captions::check_model_exists,
@@ -5396,7 +5395,7 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
             tokio::spawn({
                 let app = app.clone();
                 async move {
-                    if should_show_onboarding(&app) {
+                    if should_show_onboarding() {
                         println!("Showing onboarding");
                         let _ = ShowCapWindow::Onboarding.show(&app).await;
                     } else {
@@ -5957,7 +5956,7 @@ fn handle_run_event(_handle: &AppHandle, event: tauri::RunEvent) {
     match event {
         #[cfg(target_os = "macos")]
         tauri::RunEvent::Reopen { .. } => {
-            let should_focus_onboarding = should_show_onboarding(_handle);
+            let should_focus_onboarding = should_show_onboarding();
 
             if should_focus_onboarding
                 && let Some(onboarding) = CapWindowId::Onboarding.get(_handle)

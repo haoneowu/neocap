@@ -65,7 +65,7 @@ pub fn prewarm_fonts() {
 }
 
 pub use cursor_interpolation::PrecomputedCursorTimeline;
-use mask::interpolate_masks;
+use mask::{interpolate_display_content_masks, interpolate_output_masks};
 use scene::*;
 use text::{PreparedText, prepare_texts};
 use zoom::*;
@@ -1800,9 +1800,17 @@ fn compute_camera_position(
     if let Some(manual) = camera.manual_position {
         let x = manual.x as f32 * output_size[0] - subject_size[0] / 2.0;
         let y = manual.y as f32 * output_size[1] - subject_size[1] / 2.0;
+        // Manual placement must honour the same safe margin as corner
+        // presets. When a user chooses an oversized camera, collapse the
+        // allowed range safely instead of producing an invalid min > max
+        // clamp interval.
+        let max_x = (output_size[0] - subject_size[0] - camera_padding).max(0.0);
+        let max_y = (output_size[1] - subject_size[1] - camera_padding).max(0.0);
+        let min_x = camera_padding.min(max_x);
+        let min_y = camera_padding.min(max_y);
         return [
-            x.clamp(0.0, (output_size[0] - subject_size[0]).max(0.0)),
-            y.clamp(0.0, (output_size[1] - subject_size[1]).max(0.0)),
+            x.clamp(min_x, max_x.max(min_x)),
+            y.clamp(min_y, max_y.max(min_y)),
         ];
     }
 
@@ -1874,7 +1882,10 @@ pub struct ProjectUniforms {
     pub resolution_base: XY<u32>,
     pub display_parent_motion_px: XY<f32>,
     pub motion_blur_amount: f32,
-    pub masks: Vec<PreparedMask>,
+    /// Legacy masks in final-output coordinates.
+    pub output_masks: Vec<PreparedMask>,
+    /// Source-content masks applied before display crop/zoom/composition.
+    pub display_content_masks: Vec<PreparedMask>,
     pub texts: Vec<PreparedText>,
 }
 
@@ -2256,6 +2267,15 @@ impl MotionBlurDescriptor {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FrameLayout {
     pub display: [f32; 4],
+    /// Rendered screen-content bounds in output-frame pixels. Unlike
+    /// `display`, this excludes decorative frame chrome and is the canonical
+    /// mapping target for source-content annotations such as privacy masks.
+    pub display_content: [f32; 4],
+    /// Source-pixel crop used to map the display content into
+    /// `display_content`. Source-space overlays use this to mirror the
+    /// composite shader's crop/zoom transform in the editor preview.
+    pub display_crop_bounds: [f32; 4],
+    pub display_frame_size: [f32; 2],
     pub camera: Option<[f32; 4]>,
     pub output_size: [u32; 2],
 }
@@ -2274,6 +2294,9 @@ impl ProjectUniforms {
     pub fn frame_layout(&self) -> FrameLayout {
         FrameLayout {
             display: self.display_outer_bounds,
+            display_content: self.display.target_bounds,
+            display_crop_bounds: self.display.crop_bounds,
+            display_frame_size: self.display.frame_size,
             camera: self.camera.as_ref().map(|c| c.target_bounds),
             output_size: [self.output_size.0, self.output_size.1],
         }
@@ -3299,7 +3322,7 @@ impl ProjectUniforms {
                             ]
                         }
                     }
-                    CameraShape::Square => [
+                    CameraShape::Square | CameraShape::Circle => [
                         min_axis * scale + camera_padding,
                         min_axis * scale + camera_padding,
                     ],
@@ -3372,7 +3395,7 @@ impl ProjectUniforms {
 
                 let crop_bounds = match project.camera.shape {
                     CameraShape::Source => [0.0, 0.0, frame_size[0], frame_size[1]],
-                    CameraShape::Square => {
+                    CameraShape::Square | CameraShape::Circle => {
                         if frame_size[0] > frame_size[1] {
                             let offset = (frame_size[0] - frame_size[1]) / 2.0;
                             [offset, 0.0, frame_size[0] - offset, frame_size[1]]
@@ -3411,6 +3434,22 @@ impl ProjectUniforms {
                     final_target_bounds[2] - final_target_bounds[0],
                     final_target_bounds[3] - final_target_bounds[1],
                 ];
+                let (camera_rounding_px, camera_rounding_type) =
+                    if matches!(project.camera.shape, CameraShape::Circle) {
+                        (
+                            final_target_size[0].min(final_target_size[1]) * 0.5,
+                            rounding_type_value(CornerStyle::Rounded),
+                        )
+                    } else {
+                        (
+                            project.camera.rounding / 100.0
+                                * 0.5
+                                * final_target_size[0].min(final_target_size[1])
+                                * split_fade
+                                + min_axis * FLOATING_ROUNDING_FRAC * floating_t,
+                            rounding_type_value(project.camera.rounding_type),
+                        )
+                    };
 
                 CompositeVideoFrameUniforms {
                     output_size,
@@ -3418,12 +3457,8 @@ impl ProjectUniforms {
                     crop_bounds: final_crop_bounds,
                     target_bounds: final_target_bounds,
                     target_size: final_target_size,
-                    rounding_px: project.camera.rounding / 100.0
-                        * 0.5
-                        * final_target_size[0].min(final_target_size[1])
-                        * split_fade
-                        + min_axis * FLOATING_ROUNDING_FRAC * floating_t,
-                    rounding_type: rounding_type_value(project.camera.rounding_type),
+                    rounding_px: camera_rounding_px,
+                    rounding_type: camera_rounding_type,
                     mirror_x: if project.camera.mirror { 1.0 } else { 0.0 },
                     motion_blur_vector: camera_descriptor.movement_vector_uv,
                     motion_blur_zoom_center: camera_descriptor.zoom_center_uv,
@@ -3557,12 +3592,27 @@ impl ProjectUniforms {
                 }
             });
 
-        let masks = project
+        let output_masks = project
             .timeline
             .as_ref()
             .map(|timeline| {
-                interpolate_masks(
+                interpolate_output_masks(
                     XY::new(output_size.0, output_size.1),
+                    frame_time as f64,
+                    &timeline.mask_segments,
+                )
+            })
+            .unwrap_or_default();
+
+        let display_content_masks = project
+            .timeline
+            .as_ref()
+            .map(|timeline| {
+                interpolate_display_content_masks(
+                    XY::new(
+                        display.frame_size[0].max(1.0) as u32,
+                        display.frame_size[1].max(1.0) as u32,
+                    ),
                     frame_time as f64,
                     &timeline.mask_segments,
                 )
@@ -3603,7 +3653,8 @@ impl ProjectUniforms {
             prev_cursor: prev_interpolated_cursor,
             display_parent_motion_px: display_motion_parent,
             motion_blur_amount: cursor_motion_blur,
-            masks,
+            output_masks,
+            display_content_masks,
             texts,
         }
     }
@@ -3877,7 +3928,7 @@ mod tests {
     }
 
     #[test]
-    fn manual_camera_position_clamps_fully_on_screen() {
+    fn manual_camera_position_respects_safe_margin() {
         let camera = Camera {
             manual_position: Some(XY::new(1.0, 1.0)),
             ..Camera::default()
@@ -3885,7 +3936,7 @@ mod tests {
 
         let position = compute_camera_position(&camera, [1920.0, 1080.0], [400.0, 400.0], 50.0);
 
-        assert_eq!(position, [1520.0, 680.0]);
+        assert_eq!(position, [1470.0, 630.0]);
     }
 
     #[test]
@@ -4970,6 +5021,15 @@ impl RendererLayers {
             true
         };
 
+        if should_render_screen && !uniforms.display_content_masks.is_empty() {
+            self.display.apply_source_masks(
+                device,
+                encoder,
+                &self.mask,
+                &uniforms.display_content_masks,
+            );
+        }
+
         if should_render_screen && self.frame.has_content() {
             let mut pass = render_pass!(session.current_texture_view(), wgpu::LoadOp::Load);
             self.frame.render(&mut pass);
@@ -4978,6 +5038,15 @@ impl RendererLayers {
         if should_render_screen {
             let mut pass = render_pass!(session.current_texture_view(), wgpu::LoadOp::Load);
             self.display.render(&mut pass);
+        }
+
+        // Legacy output-space masks retain their original final-canvas
+        // semantics. New displayContent masks were already applied to the
+        // decoded screen texture above, before crop/zoom/split composition.
+        if !uniforms.output_masks.is_empty() {
+            for mask in &uniforms.output_masks {
+                self.mask.render(device, queue, session, encoder, mask);
+            }
         }
 
         if should_render_cursor {
@@ -4997,12 +5066,6 @@ impl RendererLayers {
         {
             let mut pass = render_pass!(session.current_texture_view(), wgpu::LoadOp::Load);
             self.camera.render(&mut pass);
-        }
-
-        if !uniforms.masks.is_empty() {
-            for mask in &uniforms.masks {
-                self.mask.render(device, queue, session, encoder, mask);
-            }
         }
 
         if !uniforms.texts.is_empty() {
@@ -5173,6 +5236,7 @@ mod project_uniforms_tests {
         CursorMoveEvent {
             active_modifiers: vec![],
             cursor_id: "primary".to_string(),
+            session_time_us: None,
             time_ms,
             x,
             y,

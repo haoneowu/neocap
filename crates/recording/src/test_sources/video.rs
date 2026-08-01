@@ -94,6 +94,14 @@ impl VideoSource for TestPatternVideoSource {
                         tracing::warn!("Video frame channel full, frame {} dropped", frame_number);
                     }
 
+                    // Frame synthesis is CPU-bound, so each iteration yields
+                    // explicitly. Once it falls behind the requested cadence
+                    // there is no sleep above; without this yield it can
+                    // monopolize the Tokio worker and starve the mux task
+                    // that consumes the frames we just produced. Real capture
+                    // callbacks do not share this executor.
+                    tokio::task::yield_now().await;
+
                     frame_number += 1;
                 }
 
@@ -505,44 +513,33 @@ fn fill_nv12_frame_counter(
     let height = info.height as usize;
 
     let y_stride = frame.stride(0);
-    let uv_stride = frame.stride(1);
 
     {
         let y_data = frame.data_mut(0);
-        for y in 0..height {
-            for x in 0..width {
-                let intensity = if y < 64 && x < 256 {
-                    let byte_idx = x / 32;
-                    let bit_idx = (x % 32) / 4;
-                    if byte_idx < 8 {
-                        let byte = frame_bytes[byte_idx];
-                        if (byte >> bit_idx) & 1 == 1 { 235 } else { 16 }
-                    } else {
-                        128
-                    }
-                } else {
-                    ((frame_number % 220) as u8).wrapping_add(16)
-                };
+        let background = ((frame_number % 220) as u8).wrapping_add(16);
+        y_data.fill(background);
 
-                let y_offset = y * y_stride + x;
-                if y_offset < y_data.len() {
-                    y_data[y_offset] = intensity;
-                }
+        // The counter only occupies a 256×64 corner. Filling the complete
+        // luma plane first avoids millions of per-pixel branches in the
+        // synthetic source, which would otherwise make an intended 60fps
+        // fixture fall behind and test scheduler pressure instead of muxing.
+        for y in 0..height.min(64) {
+            let row_start = y * y_stride;
+            let Some(row) = y_data.get_mut(row_start..row_start.saturating_add(width)) else {
+                break;
+            };
+            for (x, pixel) in row.iter_mut().take(256).enumerate() {
+                let byte_idx = x / 32;
+                let bit_idx = (x % 32) / 4;
+                let byte = frame_bytes[byte_idx];
+                *pixel = if (byte >> bit_idx) & 1 == 1 { 235 } else { 16 };
             }
         }
     }
 
     {
         let uv_data = frame.data_mut(1);
-        for y in 0..(height / 2) {
-            for x in 0..(width / 2) {
-                let uv_offset = y * uv_stride + x * 2;
-                if uv_offset + 1 < uv_data.len() {
-                    uv_data[uv_offset] = 128;
-                    uv_data[uv_offset + 1] = 128;
-                }
-            }
-        }
+        uv_data.fill(128);
     }
 }
 
@@ -633,5 +630,36 @@ mod tests {
         assert_eq!(info.width, 1920);
         assert_eq!(info.height, 1080);
         assert_eq!(info.pixel_format, Pixel::NV12);
+    }
+
+    #[test]
+    fn nv12_frame_counter_keeps_a_uniform_background_and_encodes_bits() {
+        let info = VideoInfo {
+            pixel_format: Pixel::NV12,
+            width: 320,
+            height: 128,
+            time_base: FFRational(1, 1_000_000),
+            frame_rate: FFRational(60, 1),
+        };
+        let mut frame = ffmpeg::frame::Video::new(Pixel::NV12, info.width, info.height);
+
+        fill_nv12_frame_counter(&mut frame, &info, 1, &1u64.to_le_bytes());
+
+        let y_stride = frame.stride(0);
+        assert_eq!(
+            frame.data(0)[0],
+            235,
+            "least-significant counter bit is white"
+        );
+        assert_eq!(frame.data(0)[4], 16, "next counter bit is black");
+        assert_eq!(
+            frame.data(0)[y_stride * 80 + 300],
+            17,
+            "background is uniform"
+        );
+        assert!(
+            frame.data(1).iter().all(|&v| v == 128),
+            "NV12 chroma stays neutral"
+        );
     }
 }

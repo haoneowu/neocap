@@ -19,7 +19,6 @@ import {
 	PhysicalPosition,
 } from "@tauri-apps/api/window";
 import * as dialog from "@tauri-apps/plugin-dialog";
-import { relaunch } from "@tauri-apps/plugin-process";
 import * as shell from "@tauri-apps/plugin-shell";
 import { cx } from "cva";
 import {
@@ -38,6 +37,8 @@ import { createStore, produce, reconcile } from "solid-js/store";
 import toast from "solid-toast";
 import { Transition } from "solid-transition-group";
 import Mode from "~/components/Mode";
+
+import { NeoCapBrand } from "~/components/NeoCapBrand";
 import { RecoveryToast } from "~/components/RecoveryToast";
 import Tooltip from "~/components/Tooltip";
 import { Input } from "~/routes/editor/ui";
@@ -82,12 +83,9 @@ import {
 	type OSPermissionsCheck,
 	type RecordingTargetMode,
 	type ScreenCaptureTarget,
-	type UpdateCheckResult,
 	type UploadProgress,
 } from "~/utils/tauri";
 import { openTeleprompter } from "~/utils/teleprompter";
-import IconCapLogoFull from "~icons/cap/logo-full";
-import IconCapLogoFullDark from "~icons/cap/logo-full-dark";
 import IconLucideAppWindowMac from "~icons/lucide/app-window-mac";
 import IconLucideArrowLeft from "~icons/lucide/arrow-left";
 import IconLucideBug from "~icons/lucide/bug";
@@ -1727,99 +1725,6 @@ export default function () {
 	);
 }
 
-let hasChecked = false;
-function createUpdateCheck() {
-	if (import.meta.env.DEV) return;
-
-	const navigate = useNavigate();
-
-	onMount(async () => {
-		if (hasChecked) return;
-		hasChecked = true;
-
-		await new Promise((res) => setTimeout(res, 10_000));
-
-		// The Rust background loop owns nightly updates.
-		const settings = await generalSettingsStore.get();
-		if (settings?.updateChannel === "nightly") return;
-
-		let update: UpdateCheckResult | null = null;
-		try {
-			update = await commands.updatesCheck();
-		} catch (e) {
-			console.error("Failed to check for updates:", e);
-			return;
-		}
-
-		if (!update) return;
-
-		let shouldUpdate: boolean | undefined;
-		try {
-			shouldUpdate = await dialog.confirm(
-				`Version ${update.version} of Cap is available, would you like to install it?`,
-				{ title: "Update Cap", okLabel: "Update", cancelLabel: "Ignore" },
-			);
-		} catch (e) {
-			console.error("Failed to show update dialog:", e);
-			return;
-		}
-
-		if (!shouldUpdate) return;
-		navigate("/update");
-	});
-}
-
-function createUpdateReadyToast() {
-	createTauriEventListener(events.updateReady, (update) => {
-		toast.custom(
-			(t) => (
-				// The main window is only 330px wide, so the toast must fit inside it
-				// (never exceed the viewport) and stack its actions below the message
-				// rather than racing them on one line — otherwise the card overflows
-				// the window edge and gets clipped.
-				<div class="flex flex-col gap-2.5 px-4 py-3 rounded-xl border shadow-lg bg-gray-1 border-gray-4 text-gray-12 w-[min(24rem,calc(100vw-2rem))]">
-					<p class="text-sm">
-						{update.installed
-							? `Cap ${update.version} has been installed — restart to apply`
-							: `Cap ${update.version} is ready to install`}
-					</p>
-					<div class="flex gap-2 items-center">
-						<button
-							type="button"
-							class="px-2.5 py-1 text-xs font-medium rounded-lg transition-colors bg-blue-9 text-white hover:bg-blue-10"
-							onClick={() => {
-								toast.dismiss(t.id);
-								const install = update.installed
-									? Promise.resolve(null)
-									: commands.updatesDownloadAndInstall();
-								// On Windows the NSIS installer restarts Cap itself, so the
-								// relaunch call is unreachable there; that matches update.tsx.
-								install
-									.then(() => relaunch())
-									.catch((e) => console.error("Failed to install update:", e));
-							}}
-						>
-							{update.installed ? "Restart now" : "Install and restart"}
-						</button>
-						<button
-							type="button"
-							class="px-2.5 py-1 text-xs font-medium rounded-lg transition-colors text-gray-11 hover:text-gray-12"
-							onClick={() => toast.dismiss(t.id)}
-						>
-							Dismiss
-						</button>
-					</div>
-				</div>
-			),
-			{
-				// One toast per version: re-emissions replace instead of stacking.
-				id: `update-ready-${update.version}`,
-				duration: Number.POSITIVE_INFINITY,
-			},
-		);
-	});
-}
-
 function MainWindowHelpButton() {
 	return (
 		<Tooltip content={<span>Help & Tour</span>}>
@@ -2469,9 +2374,6 @@ function Page() {
 	}));
 
 	const setCamera = createCameraMutation();
-
-	createUpdateCheck();
-	createUpdateReadyToast();
 
 	onMount(async () => {
 		if (document.activeElement instanceof HTMLElement) {
@@ -3214,16 +3116,11 @@ function Page() {
 				<div class="flex items-center justify-between mt-[16px] mb-[6px]">
 					<div class="flex items-center space-x-1">
 						<a
-							class="*:w-[92px] *:h-auto text-(--text-primary)"
+							class="text-(--text-primary)"
 							target="_blank"
-							href={
-								auth.data
-									? new URL("/dashboard", serverUrl()).toString()
-									: serverUrl()
-							}
+							href="https://github.com/haoneowu/neocap"
 						>
-							<IconCapLogoFullDark class="hidden dark:block" />
-							<IconCapLogoFull class="block dark:hidden" />
+							<NeoCapBrand class="flex items-center gap-2" />
 						</a>
 						<ErrorBoundary fallback={null}>
 							<Suspense>

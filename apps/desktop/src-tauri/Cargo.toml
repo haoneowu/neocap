@@ -104,6 +104,7 @@ relative-path = "1.9.3"
 cap-fail = { version = "0.1.0", path = "../../../crates/fail" }
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 md5 = "0.7.0"
+sha2 = "0.10.9"
 tokio-util = "0.7.15"
 wgpu.workspace = true
 pollster = "0.4"

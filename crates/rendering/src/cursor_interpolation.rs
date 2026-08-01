@@ -631,6 +631,7 @@ mod tests {
         CursorMoveEvent {
             active_modifiers: vec![],
             cursor_id: "primary".into(),
+            session_time_us: None,
             time_ms,
             x,
             y,
@@ -642,6 +643,7 @@ mod tests {
             active_modifiers: vec![],
             cursor_id: "primary".into(),
             cursor_num: 0,
+            session_time_us: None,
             time_ms,
             down,
         }

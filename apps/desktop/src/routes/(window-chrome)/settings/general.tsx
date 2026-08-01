@@ -41,7 +41,6 @@ import {
 	type PostDeletionBehaviour,
 	type PostStudioRecordingBehaviour,
 	type StudioRecordingQuality,
-	type UpdateChannel,
 	type WindowExclusion,
 } from "~/utils/tauri";
 import IconLucideAlertTriangle from "~icons/lucide/alert-triangle";
@@ -154,7 +153,7 @@ function AppearanceSection(props: {
 	return (
 		<Section
 			title="Appearance"
-			description="Match Cap to your system theme or pick a fixed look."
+			description="Match NeoCap to your system theme or pick a fixed look."
 		>
 			<SectionCard padded>
 				<div
@@ -488,18 +487,18 @@ function Inner(props: { initialStore: GeneralSettingsStore | null }) {
 				{ostype === "macos" && (
 					<Section
 						title="App"
-						description="Choose how Cap shows up on your system."
+						description="Choose how NeoCap shows up on your system."
 					>
 						<SectionRows>
 							<ToggleSettingItem
 								label="Always show dock icon"
-								description="Keep Cap in the dock even when no windows are open."
+								description="Keep NeoCap in the dock even when no windows are open."
 								value={!settings.hideDockIcon}
 								onChange={(v) => handleChange("hideDockIcon", !v)}
 							/>
 							<ToggleSettingItem
 								label="System notifications"
-								description="Show notifications for clipboard copies, saved files, and more. You may need to allow Cap in your system's notification settings."
+								description="Show notifications for clipboard copies, saved files, and more. You may need to allow NeoCap in your system's notification settings."
 								value={!!settings.enableNotifications}
 								onChange={async (value) => {
 									if (value) {
@@ -591,7 +590,7 @@ function Inner(props: { initialStore: GeneralSettingsStore | null }) {
 						/>
 						<ToggleSettingItem
 							label="Delete Instant recordings after upload"
-							description="Cap removes the local file once it has uploaded successfully."
+							description="NeoCap removes the local file once it has uploaded successfully."
 							value={settings.deleteInstantRecordingsAfterUpload ?? false}
 							onChange={(v) =>
 								handleChange("deleteInstantRecordingsAfterUpload", v)
@@ -689,18 +688,6 @@ function Inner(props: { initialStore: GeneralSettingsStore | null }) {
 					isWindows={ostype === "windows"}
 				/>
 
-				<UpdatesSection
-					value={settings.updateChannel ?? "stable"}
-					onChange={async (channel) => {
-						await handleChange("updateChannel", channel);
-						try {
-							await commands.updatesChannelChanged();
-						} catch (error) {
-							console.error("Failed to notify update channel change", error);
-						}
-					}}
-				/>
-
 				<ServerURLSetting
 					value={settings.serverUrl ?? clientEnv.VITE_SERVER_URL}
 					defaultValue={clientEnv.VITE_SERVER_URL}
@@ -793,7 +780,7 @@ function StorageSection(props: {
 	const isCustom = () => props.recordingsPath !== null;
 
 	return (
-		<Section title="Storage" description="Where Cap saves your recordings.">
+		<Section title="Storage" description="Where NeoCap saves your recordings.">
 			<SectionCard padded>
 				<div class="flex flex-col gap-3">
 					<div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-3 border border-gray-4 min-w-0">
@@ -826,76 +813,11 @@ function TelemetryCard(props: {
 			<SectionRows>
 				<ToggleSettingItem
 					label="Share anonymous telemetry"
-					description="Cap uses anonymous telemetry to improve reliability and fix bugs. We never collect recording contents, window titles, file paths, or personal information."
+					description="NeoCap uses anonymous telemetry to improve reliability and fix bugs. We never collect recording contents, window titles, file paths, or personal information."
 					value={props.value}
 					onChange={props.onChange}
 				/>
 			</SectionRows>
-		</Section>
-	);
-}
-
-type UpdateChannelOption = {
-	value: UpdateChannel;
-	label: string;
-	description: string;
-};
-
-const UPDATE_CHANNEL_OPTIONS: UpdateChannelOption[] = [
-	{
-		value: "stable",
-		label: "Stable",
-		description: "Versioned releases (recommended)",
-	},
-	{
-		value: "nightly",
-		label: "Nightly",
-		description:
-			"The newest builds, updated automatically in the background when you're not recording or exporting. May be unstable.",
-	},
-];
-
-function UpdatesSection(props: {
-	value: UpdateChannel;
-	onChange: (value: UpdateChannel) => void;
-}) {
-	const currentOption = createMemo(
-		() =>
-			UPDATE_CHANNEL_OPTIONS.find((option) => option.value === props.value) ??
-			UPDATE_CHANNEL_OPTIONS[0],
-	);
-
-	return (
-		<Section title="Updates" description="Choose which Cap builds you receive.">
-			<SectionCard>
-				<div class="flex flex-col gap-3 px-4 py-4">
-					<div class="flex justify-between items-start gap-4">
-						<div class="flex flex-col gap-0.5 min-w-0">
-							<p class="text-[13px] text-gray-12">Update channel</p>
-							<p class="text-xs leading-snug text-gray-10">
-								Which release channel Cap updates from.
-							</p>
-						</div>
-						<SegmentedControl
-							value={props.value}
-							onChange={props.onChange}
-							options={UPDATE_CHANNEL_OPTIONS.map((option) => ({
-								value: option.value,
-								label: option.label,
-							}))}
-						/>
-					</div>
-					<div class="flex flex-col gap-1.5 px-3 py-2.5 rounded-lg bg-gray-3">
-						<p class="text-xs text-gray-12">{currentOption().description}</p>
-						<Show when={props.value === "nightly"}>
-							<p class="text-[11px] text-gray-10 leading-snug">
-								Switching back to Stable will return you to the latest stable
-								version, which may be older than your current build.
-							</p>
-						</Show>
-					</div>
-				</div>
-			</SectionCard>
 		</Section>
 	);
 }
@@ -1039,7 +961,7 @@ function InstantQualitySetting(props: {
 			(t) => (
 				<div class="flex gap-3 items-center px-4 py-3 rounded-xl border shadow-lg bg-gray-1 border-gray-4 text-gray-12">
 					<p class="text-sm">
-						Upgrade to Cap Pro to record Instant Mode videos above 720p.
+						Upgrade to NeoCap Pro to record Instant Mode videos above 720p.
 					</p>
 					<button
 						type="button"
@@ -1064,7 +986,7 @@ function InstantQualitySetting(props: {
 			description={
 				props.hasCapPro
 					? "Choose the maximum upload resolution for Instant recordings."
-					: "Instant recordings are locked to 720p. Cap Pro unlocks higher resolutions."
+					: "Instant recordings are locked to 720p. NeoCap Pro unlocks higher resolutions."
 			}
 		>
 			<div class="flex flex-col items-end gap-1.5">
@@ -1106,8 +1028,8 @@ function CapProSection(props: {
 }) {
 	return (
 		<Section
-			title="Cap Pro"
-			description="Settings available with a Cap Pro license."
+			title="NeoCap Pro"
+			description="Settings available with a NeoCap Pro license."
 			pro
 		>
 			<SectionRows>
@@ -1166,12 +1088,12 @@ function ServerURLSetting(props: {
 	return (
 		<Section
 			title="Self-host"
-			description="Only change this if you are running your own instance of Cap Web."
+				description="Only change this if you are running your own NeoCap server."
 		>
 			<SectionCard padded>
 				<div class="flex flex-col gap-3">
 					<label class="flex flex-col gap-1.5">
-						<span class="text-[13px] text-gray-12">Cap Server URL</span>
+						<span class="text-[13px] text-gray-12">NeoCap Server URL</span>
 						<Input
 							class="bg-gray-3"
 							value={value()}
@@ -1472,7 +1394,7 @@ function ExcludedWindowsCard(props: {
 			title="Excluded windows"
 			description={
 				props.isWindows
-					? "Hide windows from recordings. On Windows, only Cap-related windows can be excluded."
+					? "Hide windows from recordings. On Windows, only NeoCap windows can be excluded."
 					: "Hide windows from recordings."
 			}
 			right={
@@ -1505,7 +1427,7 @@ function ExcludedWindowsCard(props: {
 							<IconLucideAlertTriangle class="mt-0.5 size-4 shrink-0 text-amber-11" />
 							<div class="min-w-0 flex-1 space-y-1">
 								<p class="text-xs font-medium text-amber-11">
-									Recommended Cap windows are not excluded
+									Recommended NeoCap windows are not excluded
 								</p>
 								<p class="text-[10px] leading-snug text-amber-11">
 									Camera, settings, or recording windows can appear as black

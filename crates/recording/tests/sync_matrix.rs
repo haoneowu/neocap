@@ -40,6 +40,10 @@ const ABS_TOLERANCE_SECS: f64 = 0.25;
 const REL_TOLERANCE_SECS: f64 = 0.15;
 /// Tolerance for decoded audio duration vs generated duration.
 const AUDIO_DURATION_TOLERANCE_SECS: f64 = 0.15;
+/// Random cases run in real time. Above this generated pixel rate, even flat
+/// frames measure hosted-runner scheduling rather than the timestamp path.
+/// Dedicated deterministic cases still cover much higher delivered rates.
+const MAX_RANDOM_PIXELS_PER_SECOND: u64 = 30_000_000;
 
 #[derive(Debug, Clone, Copy)]
 enum VideoScenario {
@@ -1099,12 +1103,13 @@ fn random_video_case(rng: &mut Rng) -> VideoCase {
     let fps = rng.range(10, 120) as u32;
     // Half the time the device free-runs at a rate unrelated to the
     // configured one — anywhere up to a 1000fps camera.
-    let delivered_fps = if rng.f64() < 0.5 {
+    let requested_delivered_fps = if rng.f64() < 0.5 {
         rng.range(10, 1000) as u32
     } else {
         fps
     };
     let (width, height) = rng.pick(&[(160u32, 120u32), (320, 240), (640, 360)]);
+    let delivered_fps = requested_delivered_fps.min(max_random_realtime_fps(width, height));
     let content = rng.pick(&[Content::Flat, Content::Noise, Content::Motion]);
     let fragmented = rng.f64() < 0.75;
 
@@ -1153,6 +1158,26 @@ fn random_video_case(rng: &mut Rng) -> VideoCase {
         content,
         rng_seed: rng.next(),
     }
+}
+
+fn max_random_realtime_fps(width: u32, height: u32) -> u32 {
+    (MAX_RANDOM_PIXELS_PER_SECOND / (u64::from(width) * u64::from(height))).max(1) as u32
+}
+
+#[test]
+fn random_delivery_rate_is_bounded_to_realtime_pixel_throughput() {
+    let max_640x360 = max_random_realtime_fps(640, 360);
+    assert_eq!(max_640x360, 130);
+    assert_eq!(622u32.min(max_640x360), 130);
+    assert!(
+        u64::from(640u32) * u64::from(360u32) * u64::from(max_640x360)
+            <= MAX_RANDOM_PIXELS_PER_SECOND
+    );
+    assert_eq!(
+        1_000u32.min(max_random_realtime_fps(160, 120)),
+        1_000,
+        "small-frame high-rate coverage remains available"
+    );
 }
 
 /// A random audio device shape: any rate from the set real devices negotiate,

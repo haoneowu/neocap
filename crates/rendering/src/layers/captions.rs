@@ -194,6 +194,37 @@ fn find_active_word_index(current_time: f32, words: &[CaptionWord]) -> Option<us
     last_before.or(Some(0))
 }
 
+fn caption_animation_window(
+    current_time: f32,
+    segment_start: f64,
+    segment_end: f64,
+    words: &[CaptionWord],
+    word_animation: bool,
+) -> (f64, f64) {
+    if word_animation {
+        if let Some(word_index) = find_active_word_index(current_time, words) {
+            if let Some(word) = words.get(word_index) {
+                let start = word.start as f64;
+                let end = word.end as f64;
+                if end > start {
+                    return (start, end);
+                }
+            }
+        }
+    }
+
+    (segment_start, segment_end)
+}
+
+fn animation_fade_duration(start: f64, end: f64, configured_fade: f64) -> f64 {
+    if configured_fade <= 0.0 || end <= start {
+        return 0.0;
+    }
+
+    // Do not let a long phrase-level fade swallow a short word's whole pop.
+    configured_fade.min(((end - start) / 2.0).max(0.04))
+}
+
 fn word_byte_range(
     full_text: &str,
     words: &[CaptionWord],
@@ -542,13 +573,17 @@ impl CaptionsLayer {
 
         let animation = CaptionAnimation::from_str(&caption_data.settings.animation);
 
+        let (animation_start, animation_end) = caption_animation_window(
+            current_time as f32,
+            active.segment.start,
+            effective_end,
+            &caption_words,
+            caption_data.settings.word_animation,
+        );
+        let animation_fade = animation_fade_duration(animation_start, animation_end, segment_fade);
+
         let bounce_offset = if animation == CaptionAnimation::Bounce {
-            calculate_caption_bounce(
-                current_time,
-                active.segment.start,
-                effective_end,
-                segment_fade,
-            )
+            calculate_caption_bounce(current_time, animation_start, animation_end, animation_fade)
         } else {
             0.0
         };
@@ -556,9 +591,9 @@ impl CaptionsLayer {
         let pop_scale = if animation == CaptionAnimation::Pop {
             calculate_caption_pop_scale(
                 current_time,
-                active.segment.start,
-                effective_end,
-                segment_fade,
+                animation_start,
+                animation_end,
+                animation_fade,
             )
         } else {
             1.0
@@ -1182,7 +1217,10 @@ fn calculate_caption_bounce(current_time: f64, start: f64, end: f64, fade_durati
 
 #[cfg(test)]
 mod tests {
-    use super::{caption_segment_effective_end, find_active_caption_segment};
+    use super::{
+        CaptionWord as RenderCaptionWord, animation_fade_duration, caption_animation_window,
+        caption_segment_effective_end, find_active_caption_segment,
+    };
     use cap_project::{CaptionTrackSegment, CaptionWord};
 
     fn segment(start: f64, end: f64, words: Vec<CaptionWord>) -> CaptionTrackSegment {
@@ -1231,5 +1269,35 @@ mod tests {
         assert!(find_active_caption_segment(41.0, &segments, 0.2).is_none());
         // Still active while the (capped) word is on screen.
         assert!(find_active_caption_segment(37.0, &segments, 0.2).is_some());
+    }
+
+    #[test]
+    fn word_animation_uses_the_current_word_timing() {
+        let words = vec![
+            RenderCaptionWord {
+                text: "first".to_string(),
+                start: 2.0,
+                end: 2.4,
+            },
+            RenderCaptionWord {
+                text: "second".to_string(),
+                start: 2.4,
+                end: 2.9,
+            },
+        ];
+
+        let word_window = caption_animation_window(2.5, 2.0, 4.0, &words, true);
+        assert!((word_window.0 - 2.4).abs() < 1e-5);
+        assert!((word_window.1 - 2.9).abs() < 1e-5);
+        assert_eq!(
+            caption_animation_window(2.5, 2.0, 4.0, &words, false),
+            (2.0, 4.0)
+        );
+    }
+
+    #[test]
+    fn word_animation_caps_fade_to_leave_room_for_each_pop() {
+        assert!((animation_fade_duration(2.0, 2.2, 0.5) - 0.1).abs() < 1e-6);
+        assert_eq!(animation_fade_duration(2.0, 2.2, 0.0), 0.0);
     }
 }

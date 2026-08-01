@@ -204,7 +204,12 @@ export function createOptionsQuery() {
 			if (data?.cameraId !== undefined) {
 				_setState("cameraID", data.cameraId);
 			}
-			if (data?.mode && data.mode !== _state.mode) {
+			if (data?.mode === "instant") {
+				// Old Cap installs may have persisted Instant mode. NeoCap deliberately
+				// migrates it to Studio so a local recording never asks the user to sign
+				// in or starts an upload/share session.
+				_setState("mode", "studio");
+			} else if (data?.mode && data.mode !== _state.mode) {
 				_setState("mode", data.mode);
 			}
 			if (data?.systemAudio !== undefined) {
@@ -233,7 +238,9 @@ export function createOptionsQuery() {
 	});
 
 	const storeListenerCleanup = recordingSettingsStore.listen((data) => {
-		if (data?.mode && data.mode !== _state.mode) {
+		if (data?.mode === "instant") {
+			_setState("mode", "studio");
+		} else if (data?.mode && data.mode !== _state.mode) {
 			_setState("mode", data.mode);
 		}
 	});

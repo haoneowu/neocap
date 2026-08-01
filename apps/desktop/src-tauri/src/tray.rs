@@ -360,14 +360,11 @@ fn get_current_mode(app: &AppHandle) -> RecordingMode {
         .ok()
         .flatten()
         .and_then(|s| s.mode)
-        .unwrap_or_default()
+        .unwrap_or(RecordingMode::Studio)
 }
 
-fn should_use_minimal_onboarding_tray_menu(app: &AppHandle) -> bool {
-    if !app.webview_windows().contains_key("onboarding") {
-        return false;
-    }
-    !crate::permissions::do_permissions_check(false).necessary_granted()
+fn should_use_minimal_onboarding_tray_menu(_app: &AppHandle) -> bool {
+    false
 }
 
 pub(crate) struct TrayMenuCache {
@@ -388,7 +385,6 @@ fn create_mode_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>> {
 
     let modes = [
         (TrayItem::ModeStudio, RecordingMode::Studio, "Studio"),
-        (TrayItem::ModeInstant, RecordingMode::Instant, "Instant"),
         (
             TrayItem::ModeScreenshot,
             RecordingMode::Screenshot,
@@ -966,7 +962,11 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
                 Ok(TrayItem::RequestPermissions) => {
                     let app = app.clone();
                     tokio::spawn(async move {
-                        let _ = ShowCapWindow::Onboarding.show(&app).await;
+                        let _ = ShowCapWindow::Main {
+                            init_target_mode: None,
+                        }
+                        .show(&app)
+                        .await;
                     });
                 }
                 _ => {}

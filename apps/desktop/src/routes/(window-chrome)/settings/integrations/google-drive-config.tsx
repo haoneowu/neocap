@@ -279,7 +279,7 @@ export default function GoogleDriveConfigPage() {
 				<IntegrationConfigHeader title="Google Drive" />
 				<Section
 					title="Connection"
-					description="Google Drive stores new uploads in a private Cap folder in your Drive. Existing Cap-hosted and S3 videos keep using their current storage."
+					description="Google Drive stores new uploads in a private NeoCap folder in your Drive."
 				>
 					<SectionCard padded class="custom-scroll">
 						<Suspense

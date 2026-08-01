@@ -147,7 +147,9 @@ async fn handle_hotkey(app: AppHandle, action: HotkeyAction) -> Result<(), Strin
         }
         HotkeyAction::StartInstantRecording => {
             let _ = RequestStartRecording {
-                mode: cap_recording::RecordingMode::Instant,
+                // Preserve the upstream shortcut without sending NeoCap through
+                // the Cap Cloud upload/authentication pipeline.
+                mode: cap_recording::RecordingMode::Studio,
             }
             .emit(&app);
             Ok(())
@@ -167,8 +169,8 @@ async fn handle_hotkey(app: AppHandle, action: HotkeyAction) -> Result<(), Strin
                 .unwrap_or_default();
 
             let next = match current {
-                cap_recording::RecordingMode::Studio => cap_recording::RecordingMode::Instant,
-                cap_recording::RecordingMode::Instant => cap_recording::RecordingMode::Screenshot,
+                cap_recording::RecordingMode::Studio => cap_recording::RecordingMode::Screenshot,
+                cap_recording::RecordingMode::Instant => cap_recording::RecordingMode::Studio,
                 cap_recording::RecordingMode::Screenshot => cap_recording::RecordingMode::Studio,
             };
 

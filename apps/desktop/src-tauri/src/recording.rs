@@ -4,10 +4,10 @@ use cap_media_info::ffmpeg_sample_format_for;
 use cap_project::CursorMoveEvent;
 use cap_project::cursor::SHORT_CURSOR_SHAPE_DEBOUNCE_MS;
 use cap_project::{
-    CameraShape, CursorClickEvent, GlideDirection, InstantRecordingMeta, MultipleSegments,
-    Platform, ProjectConfiguration, RecordingMeta, RecordingMetaInner, SharingMeta,
-    StudioRecordingMeta, StudioRecordingStatus, TimelineConfiguration, TimelineSegment, ZoomMode,
-    ZoomSegment, cursor::CursorEvents,
+    CameraShape, CursorClickEvent, InstantRecordingMeta, MultipleSegments, Platform,
+    ProjectConfiguration, RecordingMeta, RecordingMetaInner, SharingMeta, StudioRecordingMeta,
+    StudioRecordingStatus, TimelineConfiguration, TimelineSegment, ZoomSegment,
+    cursor::{CursorEvents, generate_auto_zoom_segments},
 };
 #[cfg(target_os = "macos")]
 use cap_recording::SendableShareableContent;
@@ -638,6 +638,39 @@ async fn acquire_shareable_content_for_target(
     ))
 }
 
+const SCREEN_CAPTURE_PERMISSION_REQUIRED_MESSAGE: &str = "Screen & System Audio Recording is not enabled for this NeoCap app. macOS authorizes each installed app build separately. Enable NeoCap in System Settings > Privacy & Security > Screen & System Audio Recording, then quit and reopen NeoCap before trying again.";
+
+fn is_screen_capture_permission_denied(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    normalized.contains("declined tccs")
+        || normalized.contains("screen capture permission")
+        || normalized.contains("not authorized to capture")
+        || normalized.contains("screen & system audio recording is not enabled")
+}
+
+fn screen_capture_preflight_error(error: impl std::fmt::Display) -> String {
+    let error = error.to_string();
+    if is_screen_capture_permission_denied(&error) {
+        SCREEN_CAPTURE_PERMISSION_REQUIRED_MESSAGE.to_string()
+    } else {
+        error
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn preflight_screen_capture_target(
+    capture_target: &ScreenCaptureTarget,
+) -> Result<(), String> {
+    if matches!(capture_target, ScreenCaptureTarget::CameraOnly) {
+        return Ok(());
+    }
+
+    acquire_shareable_content_for_target(capture_target)
+        .await
+        .map(|_| ())
+        .map_err(screen_capture_preflight_error)
+}
+
 #[cfg(target_os = "macos")]
 async fn read_recording_shareable_content() -> anyhow::Result<SendableShareableContent> {
     let content = cidre::sc::ShareableContent::current()
@@ -1161,6 +1194,30 @@ pub enum RecordingAction {
 const MICROPHONE_INPUT_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 const CAMERA_INPUT_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 
+const SELECTED_CAMERA_UNAVAILABLE_MESSAGE: &str = "The selected camera is no longer available. Reconnect it or choose another camera in Settings, then try recording again.";
+const SELECTED_MICROPHONE_UNAVAILABLE_MESSAGE: &str = "The selected microphone is no longer available. Reconnect it or choose another microphone in Settings, then try recording again.";
+const SELECTED_RECORDING_DEVICE_UNAVAILABLE_MESSAGE: &str = "A selected camera or microphone is no longer available. Reconnect it or choose another device in Settings, then try recording again.";
+
+fn selected_camera_unavailable_error() -> anyhow::Error {
+    anyhow!(SELECTED_CAMERA_UNAVAILABLE_MESSAGE)
+}
+
+fn selected_microphone_unavailable_error() -> anyhow::Error {
+    anyhow!(SELECTED_MICROPHONE_UNAVAILABLE_MESSAGE)
+}
+
+/// `DeviceNotFound` is an internal feed error. It must never reach the desktop UI
+/// verbatim because, by the time an actor-builder reports it, the original feed
+/// type may no longer be available at this boundary. The normal camera/microphone
+/// initialization paths retain the more precise message above.
+fn recording_start_error_message(error: &str) -> String {
+    if error.contains("DeviceNotFound") {
+        SELECTED_RECORDING_DEVICE_UNAVAILABLE_MESSAGE.to_string()
+    } else {
+        error.to_string()
+    }
+}
+
 fn camera_id_label(id: &camera::DeviceOrModelID) -> String {
     match id {
         camera::DeviceOrModelID::DeviceID(device_id) => device_id.clone(),
@@ -1182,18 +1239,26 @@ async fn initialize_selected_camera(
     settings: Option<camera::CameraDeviceSettings>,
 ) -> anyhow::Result<()> {
     let label = camera_id_label(id);
-    let ready = camera_feed
+    let ready = match camera_feed
         .ask(camera::SetInput {
             id: id.clone(),
             settings,
         })
         .await
-        .map_err(|err| anyhow!("Failed to initialize selected camera '{label}': {err}"))?;
+    {
+        Ok(ready) => ready,
+        Err(kameo::error::SendError::HandlerError(camera::SetInputError::DeviceNotFound)) => {
+            return Err(selected_camera_unavailable_error());
+        }
+        Err(err) => {
+            return Err(anyhow!(
+                "Failed to initialize selected camera '{label}': {err}"
+            ));
+        }
+    };
 
     ready.await.map(|_| ()).map_err(|err| match err {
-        camera::SetInputError::DeviceNotFound => {
-            anyhow!("Selected camera '{label}' is no longer available")
-        }
+        camera::SetInputError::DeviceNotFound => selected_camera_unavailable_error(),
         err => anyhow!("Failed to initialize selected camera '{label}': {err}"),
     })
 }
@@ -1327,18 +1392,26 @@ async fn initialize_selected_microphone(
     label: &str,
     settings: Option<microphone::MicrophoneDeviceSettings>,
 ) -> anyhow::Result<()> {
-    let ready = mic_feed
+    let ready = match mic_feed
         .ask(microphone::SetInput {
             label: label.to_string(),
             settings,
         })
         .await
-        .map_err(|err| anyhow!("Failed to initialize selected microphone '{label}': {err}"))?;
+    {
+        Ok(ready) => ready,
+        Err(kameo::error::SendError::HandlerError(microphone::SetInputError::DeviceNotFound)) => {
+            return Err(selected_microphone_unavailable_error());
+        }
+        Err(err) => {
+            return Err(anyhow!(
+                "Failed to initialize selected microphone '{label}': {err}"
+            ));
+        }
+    };
 
     ready.await.map(|_| ()).map_err(|err| match err {
-        microphone::SetInputError::DeviceNotFound => {
-            anyhow!("Selected microphone '{label}' is no longer available")
-        }
+        microphone::SetInputError::DeviceNotFound => selected_microphone_unavailable_error(),
         err => anyhow!("Failed to initialize selected microphone '{label}': {err}"),
     })
 }
@@ -1486,6 +1559,13 @@ pub async fn start_recording(
 ) -> Result<RecordingAction, String> {
     let mut inputs = inputs;
 
+    let local_mode = crate::recording_settings::local_recording_mode(inputs.mode);
+    // Normalize before any pending state, upload setup, or account lookup.
+    if local_mode != inputs.mode {
+        info!("Converting legacy Instant selection to local Studio recording");
+        inputs.mode = local_mode;
+    }
+
     if EditorRecordingTarget::current(&app).is_some() {
         inputs.mode = RecordingMode::Studio;
     }
@@ -1494,6 +1574,22 @@ pub async fn start_recording(
 
     if is_camera_only {
         inputs.capture_system_audio = false;
+    }
+
+    // ScreenCaptureKit, not the legacy CoreGraphics preflight, is the authority
+    // for the actual recording path. Probe it before creating a project or
+    // hiding the picker so a TCC denial cannot create a failed empty `.cap`.
+    #[cfg(target_os = "macos")]
+    if let Err(error) = preflight_screen_capture_target(&inputs.capture_target).await {
+        if is_screen_capture_permission_denied(&error) {
+            permissions::request_permission(
+                app.clone(),
+                permissions::OSPermission::ScreenRecording,
+            )
+            .await;
+        }
+        notify_recording_start_failed(&app, &error);
+        return Err(error);
     }
 
     {
@@ -2082,26 +2178,16 @@ pub async fn start_recording(
         Ok(Ok(v)) => v,
         Ok(Err(err)) => {
             let message = format!("{err:#}");
-            handle_spawn_failure(
-                &app,
-                &state_mtx,
-                project_file_path.as_path(),
-                message.clone(),
-            )
-            .await?;
-            return Err(message);
+            let user_message = recording_start_error_message(&message);
+            handle_spawn_failure(&app, &state_mtx, project_file_path.as_path(), message).await?;
+            return Err(user_message);
         }
         Err(panic) => {
             let panic_msg = panic_message(panic);
             let message = format!("Failed to spawn recording actor: {panic_msg}");
-            handle_spawn_failure(
-                &app,
-                &state_mtx,
-                project_file_path.as_path(),
-                message.clone(),
-            )
-            .await?;
-            return Err(message);
+            let user_message = recording_start_error_message(&message);
+            handle_spawn_failure(&app, &state_mtx, project_file_path.as_path(), message).await?;
+            return Err(user_message);
         }
     };
 
@@ -2457,8 +2543,10 @@ async fn handle_spawn_failure(
         "Recording actor spawn failed"
     );
 
+    let user_message = recording_start_error_message(&message);
+
     let _ = RecordingEvent::Failed {
-        error: message.clone(),
+        error: user_message.clone(),
     }
     .emit(app);
 
@@ -2471,7 +2559,7 @@ async fn handle_spawn_failure(
         let mut dialog = MessageDialogBuilder::new(
             app.dialog().clone(),
             "An error occurred".to_string(),
-            message.clone(),
+            user_message.clone(),
         )
         .kind(tauri_plugin_dialog::MessageDialogKind::Error);
 
@@ -2485,7 +2573,7 @@ async fn handle_spawn_failure(
     let mut state = state_mtx.write().await;
     let _ = handle_recording_end(
         app.clone(),
-        Err(message),
+        Err(user_message),
         &mut state,
         recording_dir.to_path_buf(),
     )
@@ -3649,81 +3737,11 @@ async fn finalize_studio_recording(
 }
 
 fn generate_zoom_segments_from_clicks_impl(
-    mut clicks: Vec<CursorClickEvent>,
+    clicks: Vec<CursorClickEvent>,
     _moves: Vec<CursorMoveEvent>,
     max_duration: f64,
 ) -> Vec<ZoomSegment> {
-    const MS_PER_SECOND: f64 = 1000.0;
-    const START_MIN_MS: f64 = 1.0;
-    const CLICK_PRE_PADDING_MS: f64 = 300.0;
-    const CLICK_POST_PADDING_MS: f64 = 2500.0;
-    const CLICK_END_CLAMP_PADDING_MS: f64 = 800.0;
-    const TRAILING_CLICK_IGNORE_MS: f64 = 1000.0;
-    const MERGE_GAP_MS: f64 = 2500.0;
-    const AUTO_ZOOM_AMOUNT: f64 = 2.0;
-
-    if max_duration <= 0.0 {
-        return Vec::new();
-    }
-
-    let duration_ms = max_duration * MS_PER_SECOND;
-    let click_cutoff_ms = duration_ms - TRAILING_CLICK_IGNORE_MS;
-    let end_limit_ms = duration_ms - CLICK_END_CLAMP_PADDING_MS;
-    if click_cutoff_ms <= 0.0 || end_limit_ms <= START_MIN_MS {
-        return Vec::new();
-    }
-
-    clicks.sort_by(|a, b| {
-        a.time_ms
-            .partial_cmp(&b.time_ms)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    let mut intervals: Vec<(f64, f64)> = Vec::new();
-    for click in clicks {
-        let time_ms = click.time_ms.floor();
-        if time_ms >= click_cutoff_ms {
-            continue;
-        }
-
-        let start = (time_ms - CLICK_PRE_PADDING_MS).max(START_MIN_MS);
-        let end = (time_ms + CLICK_POST_PADDING_MS).min(end_limit_ms);
-
-        if end > start {
-            intervals.push((start, end));
-        }
-    }
-
-    if intervals.is_empty() {
-        return Vec::new();
-    }
-
-    intervals.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-
-    let mut merged: Vec<(f64, f64)> = Vec::new();
-    for interval in intervals {
-        if let Some(last) = merged.last_mut()
-            && interval.0 <= last.1 + MERGE_GAP_MS
-        {
-            last.1 = last.1.max(interval.1);
-            continue;
-        }
-        merged.push(interval);
-    }
-
-    merged
-        .into_iter()
-        .map(|(start, end)| ZoomSegment {
-            start: start.round() / MS_PER_SECOND,
-            end: end.round() / MS_PER_SECOND,
-            amount: AUTO_ZOOM_AMOUNT,
-            mode: ZoomMode::Auto,
-            glide_direction: GlideDirection::None,
-            glide_speed: 0.5,
-            instant_animation: false,
-            edge_snap_ratio: 0.25,
-        })
-        .collect()
+    generate_auto_zoom_segments(clicks, max_duration)
 }
 
 /// Generates zoom segments based on mouse click events during recording.
@@ -3756,8 +3774,6 @@ pub fn generate_zoom_segments_for_project(
     };
 
     let mut all_clicks = Vec::new();
-    let mut all_moves = Vec::new();
-
     match &**studio_meta {
         StudioRecordingMeta::SingleSegment { segment } => {
             if let Some(cursor_path) = &segment.cursor {
@@ -3770,19 +3786,33 @@ pub fn generate_zoom_segments_for_project(
                     SHORT_CURSOR_SHAPE_DEBOUNCE_MS,
                 );
                 all_clicks = events.clicks;
-                all_moves = events.moves;
             }
         }
         StudioRecordingMeta::MultipleSegments { inner, .. } => {
-            for segment in inner.segments.iter() {
-                let events = segment.cursor_events(recording_meta);
+            if recordings.segments.len() != inner.segments.len() {
+                warn!(
+                    cursor_segments = inner.segments.len(),
+                    recording_segments = recordings.segments.len(),
+                    "Skipping auto zoom generation because cursor and media segment counts differ"
+                );
+                return Vec::new();
+            }
+
+            let mut timeline_offset_ms = 0.0;
+            for (index, segment) in inner.segments.iter().enumerate() {
+                let mut events = segment.cursor_events(recording_meta);
+                // Cursor `time_ms` is local to one captured segment. Project
+                // playback concatenates those media segments, so translate it
+                // by the actual preceding media durations, not wall-clock
+                // metadata (which includes pauses).
+                events.offset_timeline_time_ms(timeline_offset_ms);
                 all_clicks.extend(events.clicks);
-                all_moves.extend(events.moves);
+                timeline_offset_ms += recordings.segments[index].duration() * 1000.0;
             }
         }
     }
 
-    generate_zoom_segments_from_clicks_impl(all_clicks, all_moves, recordings.duration())
+    generate_zoom_segments_from_clicks_impl(all_clicks, Vec::new(), recordings.duration())
 }
 
 fn project_config_from_recording(
@@ -4148,6 +4178,7 @@ mod tests {
             active_modifiers: vec![],
             cursor_num: 0,
             cursor_id: "default".to_string(),
+            session_time_us: None,
             time_ms,
             down,
         }
@@ -4165,6 +4196,7 @@ mod tests {
         CursorMoveEvent {
             active_modifiers: vec![],
             cursor_id: "default".to_string(),
+            session_time_us: None,
             time_ms,
             x,
             y,
@@ -4187,6 +4219,22 @@ mod tests {
     #[test]
     fn mic_feed_locked_ignores_unrelated_errors() {
         assert!(!mic_feed_locked(&anyhow!("different failure")));
+    }
+
+    #[test]
+    fn maps_raw_device_not_found_to_a_recoverable_start_error() {
+        assert_eq!(
+            recording_start_error_message("DeviceNotFound"),
+            SELECTED_RECORDING_DEVICE_UNAVAILABLE_MESSAGE
+        );
+    }
+
+    #[test]
+    fn preserves_non_device_start_errors() {
+        assert_eq!(
+            recording_start_error_message("Failed to create recording directory"),
+            "Failed to create recording directory"
+        );
     }
 
     #[test]
@@ -4408,6 +4456,27 @@ mod tests {
             ActorDoneDisposition::Failed {
                 error: "feed lost".to_string()
             }
+        );
+    }
+
+    #[test]
+    fn maps_screencapturekit_tcc_denials_to_an_actionable_message() {
+        let error = screen_capture_preflight_error(
+            "ReadShareableContent: The user declined TCCs for application, window, display capture",
+        );
+
+        assert_eq!(error, SCREEN_CAPTURE_PERMISSION_REQUIRED_MESSAGE);
+    }
+
+    #[test]
+    fn keeps_non_permission_screencapturekit_errors_intact() {
+        let error = screen_capture_preflight_error(
+            "ScreenCaptureKit shareable content missing target display 42. Available display ids: [1]",
+        );
+
+        assert_eq!(
+            error,
+            "ScreenCaptureKit shareable content missing target display 42. Available display ids: [1]"
         );
     }
 }

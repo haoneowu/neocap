@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
+import type { FrameLayoutEvent } from "~/utils/tauri";
 
 import {
 	defaultMaskSegment,
 	encodeMaskEffect,
+	getMaskCoordinateSpace,
 	getMaskEffect,
 	getMaskEffectAmount,
+	maskStateToOutput,
 } from "./masks";
 
 describe("mask effects", () => {
@@ -14,6 +17,7 @@ describe("mask effects", () => {
 		expect(getMaskEffect(segment)).toBe("blur");
 		expect(getMaskEffectAmount(segment)).toBe(16);
 		expect(segment.opacity).toBe(1);
+		expect(segment.coordinateSpace).toBe("displayContent");
 	});
 
 	it("preserves legacy pixelation values", () => {
@@ -40,5 +44,66 @@ describe("mask effects", () => {
 		expect(getMaskEffectAmount(segment)).toBe(16);
 		expect(encodeMaskEffect("pixelate", 1)).toBe(4);
 		expect(encodeMaskEffect("blur", 100)).toBe(1080);
+	});
+
+	it("maps display-content masks through the current rendered screen bounds", () => {
+		const segment = defaultMaskSegment(0, 1);
+		segment.center = { x: 0.25, y: 0.75 };
+		segment.size = { x: 0.2, y: 0.1 };
+		const layout: FrameLayoutEvent = {
+			display: [-240, 80, 1680, 1160],
+			display_content: [-240, 80, 1680, 1160],
+			display_crop_bounds: [0, 0, 1920, 1080],
+			display_frame_size: [1920, 1080],
+			camera: null,
+			output_width: 1920,
+			output_height: 1080,
+		};
+
+		expect(maskStateToOutput(segment, 0.5, layout)).toEqual({
+			position: { x: 0.125, y: 0.8240740740740741 },
+			size: { x: 0.2, y: 0.1 },
+		});
+	});
+
+	it("keeps missing coordinate-space fields on legacy output-canvas semantics", () => {
+		const segment = defaultMaskSegment(0, 1);
+		const legacy = { ...segment, coordinateSpace: undefined };
+		const layout: FrameLayoutEvent = {
+			display: [-240, 80, 1680, 1160],
+			display_content: [-240, 80, 1680, 1160],
+			display_crop_bounds: [0, 0, 1920, 1080],
+			display_frame_size: [1920, 1080],
+			camera: null,
+			output_width: 1920,
+			output_height: 1080,
+		};
+
+		expect(getMaskCoordinateSpace(legacy)).toBe("output");
+		expect(maskStateToOutput(legacy, 0.5, layout)).toEqual({
+			position: { x: 0.5, y: 0.5 },
+			size: { x: 0.35, y: 0.35 },
+		});
+	});
+
+	it("uses the same source crop transform as the display composite", () => {
+		const segment = defaultMaskSegment(0, 1);
+		segment.center = { x: 0.5, y: 0.5 };
+		segment.size = { x: 0.2, y: 0.2 };
+		const layout: FrameLayoutEvent = {
+			display: [0, 0, 1920, 1080],
+			display_content: [0, 0, 1920, 1080],
+			// A 2x centred zoom crops the source to [480, 270, 1440, 810].
+			display_crop_bounds: [480, 270, 1440, 810],
+			display_frame_size: [1920, 1080],
+			camera: null,
+			output_width: 1920,
+			output_height: 1080,
+		};
+
+		expect(maskStateToOutput(segment, 0.5, layout)).toEqual({
+			position: { x: 0.5, y: 0.5 },
+			size: { x: 0.4, y: 0.4 },
+		});
 	});
 });

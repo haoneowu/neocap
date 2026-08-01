@@ -1,8 +1,8 @@
 {
 	"$schema": "https://schema.tauri.app/config/2",
-	"productName": "Cap - Development",
-	"identifier": "so.cap.desktop.dev",
-	"mainBinaryName": "Cap - Development",
+	"productName": "NeoCap Debug",
+	"identifier": "com.haoneowu.neocap.debug",
+	"mainBinaryName": "NeoCap Debug",
 	"build": {
 		"beforeDevCommand": "pnpm localdev",
 		"devUrl": "http://localhost:3002",
@@ -36,13 +36,13 @@
 		"updater": { "active": false, "pubkey": "" },
 		"deep-link": {
 			"desktop": {
-				"schemes": ["cap-desktop"]
+				"schemes": ["neocap-debug"]
 			}
 		}
 	},
 	"bundle": {
 		"active": true,
-		"createUpdaterArtifacts": true,
+		"createUpdaterArtifacts": false,
 		"targets": "all",
 		"externalBin": [
 			"binaries/cap-muxer",
@@ -104,18 +104,18 @@
 					"libasound2t64 | libasound2"
 				],
 				"files": {
-					"/usr/share/icons/hicolor/scalable/status/so.cap.desktop-tray-default-symbolic.svg": "icons/linux/so.cap.desktop-tray-default-symbolic.svg",
-					"/usr/share/icons/hicolor/scalable/status/so.cap.desktop-tray-instant-symbolic.svg": "icons/linux/so.cap.desktop-tray-instant-symbolic.svg",
-					"/usr/share/icons/hicolor/scalable/status/so.cap.desktop-tray-screenshot-symbolic.svg": "icons/linux/so.cap.desktop-tray-screenshot-symbolic.svg",
-					"/usr/share/icons/hicolor/scalable/status/so.cap.desktop-tray-studio-symbolic.svg": "icons/linux/so.cap.desktop-tray-studio-symbolic.svg",
-					"/usr/share/icons/hicolor/scalable/status/so.cap.desktop-tray-stop-symbolic.svg": "icons/linux/so.cap.desktop-tray-stop-symbolic.svg"
+					"/usr/share/icons/hicolor/scalable/status/com.haoneowu.neocap-tray-default-symbolic.svg": "icons/linux/so.cap.desktop-tray-default-symbolic.svg",
+					"/usr/share/icons/hicolor/scalable/status/com.haoneowu.neocap-tray-instant-symbolic.svg": "icons/linux/so.cap.desktop-tray-instant-symbolic.svg",
+					"/usr/share/icons/hicolor/scalable/status/com.haoneowu.neocap-tray-screenshot-symbolic.svg": "icons/linux/so.cap.desktop-tray-screenshot-symbolic.svg",
+					"/usr/share/icons/hicolor/scalable/status/com.haoneowu.neocap-tray-studio-symbolic.svg": "icons/linux/so.cap.desktop-tray-studio-symbolic.svg",
+					"/usr/share/icons/hicolor/scalable/status/com.haoneowu.neocap-tray-stop-symbolic.svg": "icons/linux/so.cap.desktop-tray-stop-symbolic.svg"
 				}
 			}
 		},
 		"fileAssociations": [
 			{
 				"ext": ["cap"],
-				"name": "Cap Project",
+				"name": "NeoCap Project",
 				"mimeType": "application/x-cap-project",
 				"role": "Editor"
 			}

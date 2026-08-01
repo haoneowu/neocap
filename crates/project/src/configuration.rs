@@ -424,6 +424,7 @@ pub struct Camera {
 pub enum CameraShape {
     #[default]
     Square,
+    Circle,
     Source,
 }
 
@@ -759,6 +760,21 @@ pub enum MaskKind {
     Highlight,
 }
 
+/// Coordinate system used to persist a mask rectangle.
+///
+/// `Output` is the legacy/default meaning: normalized against the final
+/// output canvas. `DisplayContent` is normalized against the screen-content
+/// layer before its current zoom/split placement. Keeping `Output` as the
+/// serde default means projects saved before this field was introduced render
+/// exactly as they did before.
+#[derive(Type, Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum MaskCoordinateSpace {
+    #[default]
+    Output,
+    DisplayContent,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MaskEffectContract {
@@ -813,6 +829,8 @@ pub struct MaskSegment {
     #[serde(default = "MaskSegment::default_enabled")]
     pub enabled: bool,
     pub mask_type: MaskKind,
+    #[serde(default)]
+    pub coordinate_space: MaskCoordinateSpace,
     pub center: XY<f64>,
     pub size: XY<f64>,
     #[serde(default)]
@@ -1133,6 +1151,8 @@ pub struct CaptionSettings {
     pub word_transition_duration: f32,
     #[serde(alias = "activeWordHighlight")]
     pub active_word_highlight: bool,
+    #[serde(default, alias = "wordAnimation")]
+    pub word_animation: bool,
     #[serde(alias = "manualPosition")]
     pub manual_position: Option<XY<f32>>,
     pub preset: String,
@@ -1164,6 +1184,10 @@ impl CaptionSettings {
     }
 
     fn default_active_word_highlight() -> bool {
+        false
+    }
+
+    fn default_word_animation() -> bool {
         false
     }
 
@@ -1200,6 +1224,7 @@ impl Default for CaptionSettings {
             linger_duration: Self::default_linger_duration(),
             word_transition_duration: Self::default_word_transition_duration(),
             active_word_highlight: Self::default_active_word_highlight(),
+            word_animation: Self::default_word_animation(),
             manual_position: None,
             preset: Self::default_preset(),
             animation: Self::default_animation(),
@@ -1654,6 +1679,139 @@ mod tests {
         .unwrap();
 
         assert_eq!(segment.pixelation, 16.0);
+        assert_eq!(segment.coordinate_space, MaskCoordinateSpace::Output);
+    }
+
+    #[test]
+    fn display_content_coordinate_space_round_trips_in_project_json() {
+        let segment: MaskSegment = serde_json::from_value(serde_json::json!({
+            "start": 0.0,
+            "end": 1.0,
+            "maskType": "sensitive",
+            "coordinateSpace": "displayContent",
+            "center": { "x": 0.5, "y": 0.5 },
+            "size": { "x": 0.25, "y": 0.25 }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            segment.coordinate_space,
+            MaskCoordinateSpace::DisplayContent
+        );
+        assert_eq!(
+            serde_json::to_value(segment)
+                .unwrap()
+                .get("coordinateSpace")
+                .and_then(Value::as_str),
+            Some("displayContent")
+        );
+    }
+
+    #[test]
+    fn circle_camera_shape_round_trips_in_project_json() {
+        let camera: Camera = serde_json::from_value(serde_json::json!({
+            "shape": "circle"
+        }))
+        .unwrap();
+
+        assert!(matches!(camera.shape, CameraShape::Circle));
+        assert_eq!(
+            serde_json::to_value(camera)
+                .unwrap()
+                .get("shape")
+                .and_then(Value::as_str),
+            Some("circle")
+        );
+    }
+
+    #[test]
+    fn neocap_p0_composition_survives_save_and_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = ProjectConfiguration::default();
+        config.aspect_ratio = Some(AspectRatio::Vertical);
+        config.camera.shape = CameraShape::Circle;
+        config.camera.manual_position = Some(XY::new(0.8, 0.2));
+        config.captions = Some(CaptionsData {
+            source_timed: true,
+            settings: CaptionSettings {
+                enabled: true,
+                preset: "reels-bounce".to_string(),
+                word_animation: true,
+                ..Default::default()
+            },
+            segments: vec![CaptionSegment {
+                id: "caption-1".to_string(),
+                start: 1.0,
+                end: 2.0,
+                text: "你好NeoCap".to_string(),
+                words: vec![
+                    CaptionWord {
+                        text: "你".to_string(),
+                        start: 1.0,
+                        end: 1.25,
+                    },
+                    CaptionWord {
+                        text: "好".to_string(),
+                        start: 1.25,
+                        end: 1.5,
+                    },
+                ],
+            }],
+        });
+        config.timeline = Some(TimelineConfiguration {
+            segments: vec![],
+            zoom_segments: vec![ZoomSegment {
+                start: 0.7,
+                end: 3.5,
+                amount: 2.0,
+                mode: ZoomMode::Auto,
+                glide_direction: GlideDirection::None,
+                glide_speed: 0.5,
+                instant_animation: false,
+                edge_snap_ratio: 0.25,
+            }],
+            scene_segments: vec![],
+            mask_segments: vec![MaskSegment {
+                start: 0.5,
+                end: 3.0,
+                track: 0,
+                enabled: true,
+                mask_type: MaskKind::Sensitive,
+                coordinate_space: MaskCoordinateSpace::DisplayContent,
+                center: XY::new(0.5, 0.5),
+                size: XY::new(0.2, 0.2),
+                feather: 0.0,
+                opacity: 1.0,
+                pixelation: 16.0,
+                darkness: 0.0,
+                fade_duration: 0.15,
+                keyframes: MaskKeyframes::default(),
+            }],
+            text_segments: vec![],
+            caption_segments: vec![],
+            keyboard_segments: vec![],
+            audio_segments: vec![],
+        });
+
+        config.write(dir.path()).unwrap();
+        let reopened = ProjectConfiguration::load(dir.path()).unwrap();
+
+        assert!(matches!(reopened.aspect_ratio, Some(AspectRatio::Vertical)));
+        assert!(matches!(reopened.camera.shape, CameraShape::Circle));
+        assert_eq!(reopened.camera.manual_position.unwrap().x, 0.8);
+
+        let captions = reopened.captions.as_ref().unwrap();
+        assert!(captions.source_timed);
+        assert!(captions.settings.word_animation);
+        assert_eq!(captions.settings.preset, "reels-bounce");
+        assert_eq!(captions.segments[0].words[1].text, "好");
+
+        let timeline = reopened.timeline.as_ref().unwrap();
+        assert!(matches!(timeline.zoom_segments[0].mode, ZoomMode::Auto));
+        assert_eq!(
+            timeline.mask_segments[0].coordinate_space,
+            MaskCoordinateSpace::DisplayContent
+        );
     }
 
     #[test]

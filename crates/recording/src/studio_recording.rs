@@ -1227,6 +1227,9 @@ struct SegmentPipelineFactory {
     use_oop_muxer: bool,
     max_fps: u32,
     quality: crate::StudioQuality,
+    /// Stable recorder-session anchor shared by all pause/resume segments.
+    /// Individual media pipelines still receive their own start timestamp.
+    session_start_time: Timestamps,
     index: u32,
     completion_tx: watch::Sender<Option<Result<(), PipelineDoneError>>>,
     #[cfg(windows)]
@@ -1257,6 +1260,7 @@ impl SegmentPipelineFactory {
             use_oop_muxer,
             max_fps,
             quality,
+            session_start_time: Timestamps::now(),
             index: 0,
             completion_tx,
             #[cfg(windows)]
@@ -1284,6 +1288,7 @@ impl SegmentPipelineFactory {
             self.max_fps,
             self.quality,
             segment_start_time,
+            self.session_start_time,
             #[cfg(windows)]
             self.encoder_preferences.clone(),
         )
@@ -1371,6 +1376,7 @@ async fn create_segment_pipeline(
     max_fps: u32,
     quality: crate::StudioQuality,
     start_time: Timestamps,
+    session_start_time: Timestamps,
     #[cfg(windows)] encoder_preferences: crate::capture_pipeline::EncoderPreferences,
 ) -> anyhow::Result<Pipeline> {
     #[cfg(windows)]
@@ -1724,6 +1730,7 @@ async fn create_segment_pipeline(
                     prev_cursors,
                     next_cursors_id,
                     start_time,
+                    session_start_time,
                     IncrementalCaptureOutputs {
                         cursor: incremental_output,
                         keyboard: keyboard_incremental_output,

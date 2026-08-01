@@ -382,9 +382,6 @@ async refreshCameraFeed() : Promise<null> {
 async createDir(path: string, recursive: boolean) : Promise<null> {
     return await TAURI_INVOKE("create_dir", { path, recursive });
 },
-async saveModelFile(path: string, data: number[]) : Promise<null> {
-    return await TAURI_INVOKE("save_model_file", { path, data });
-},
 async transcribeAudio(videoPath: string, modelPath: string, language: string, engine: TranscriptionEngine) : Promise<CaptionData> {
     return await TAURI_INVOKE("transcribe_audio", { videoPath, modelPath, language, engine });
 },
