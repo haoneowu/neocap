@@ -36,6 +36,35 @@ export type PermissionRequestResult = {
 	openedSettings: boolean;
 };
 
+type PermissionPollOptions = {
+	maxAttempts?: number;
+	sleep?: () => Promise<void>;
+};
+
+const permissionPollSleep = () =>
+	new Promise<void>((resolve) => {
+		setTimeout(resolve, 500);
+	});
+
+export async function waitForPermissionUpdate(
+	client: Pick<PermissionClient, "doPermissionsCheck">,
+	permission: OSPermission,
+	options: PermissionPollOptions = {},
+): Promise<Pick<PermissionRequestResult, "check" | "status">> {
+	const { maxAttempts = 60, sleep = permissionPollSleep } = options;
+	let check = await client.doPermissionsCheck(false);
+	let status = permissionStatusFor(check, permission);
+
+	for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+		if (isPermissionGranted(status)) break;
+		await sleep();
+		check = await client.doPermissionsCheck(false);
+		status = permissionStatusFor(check, permission);
+	}
+
+	return { check, status };
+}
+
 export async function requestAndVerifyPermission(
 	client: PermissionClient,
 	permission: OSPermission,

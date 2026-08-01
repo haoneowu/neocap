@@ -4,6 +4,7 @@ import {
 	isPermissionGranted,
 	permissionStatusFor,
 	requestAndVerifyPermission,
+	waitForPermissionUpdate,
 } from "~/utils/os-permissions";
 
 describe("os-permissions", () => {
@@ -92,5 +93,32 @@ describe("os-permissions", () => {
 		expect(client.openPermissionSettings).toHaveBeenCalledWith("accessibility");
 		expect(result.status).toBe("denied");
 		expect(result.openedSettings).toBe(true);
+	});
+
+	it("polls until a permission change is observed", async () => {
+		const denied = {
+			screenRecording: "empty",
+			microphone: "empty",
+			camera: "denied",
+			accessibility: "empty",
+		} as const;
+		const granted = { ...denied, camera: "granted" } as const;
+		const client = {
+			doPermissionsCheck: vi
+				.fn()
+				.mockResolvedValueOnce(denied)
+				.mockResolvedValueOnce(denied)
+				.mockResolvedValueOnce(granted),
+		};
+		const sleep = vi.fn().mockResolvedValue(undefined);
+
+		const result = await waitForPermissionUpdate(client, "camera", {
+			maxAttempts: 5,
+			sleep,
+		});
+
+		expect(result.status).toBe("granted");
+		expect(client.doPermissionsCheck).toHaveBeenCalledTimes(3);
+		expect(sleep).toHaveBeenCalledTimes(2);
 	});
 });
