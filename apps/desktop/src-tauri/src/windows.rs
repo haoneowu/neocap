@@ -1025,19 +1025,19 @@ impl CapWindowId {
 
     pub fn title(&self) -> String {
         match self {
-            Self::Settings => "Cap Settings".to_string(),
-            Self::WindowCaptureOccluder { .. } => "Cap Window Capture Occluder".to_string(),
-            Self::CaptureArea => "Cap Capture Area".to_string(),
-            Self::RecordingControls => "Cap Recording Controls".to_string(),
-            Self::Editor { .. } => "Cap Editor".to_string(),
-            Self::ScreenshotEditor { .. } => "Cap Screenshot Editor".to_string(),
-            Self::ModeSelect => "Cap Mode Selection".to_string(),
-            Self::Onboarding => "Welcome to Cap".to_string(),
-            Self::Camera => "Cap Camera".to_string(),
-            Self::RecordingsOverlay => "Cap Recordings Overlay".to_string(),
-            Self::TargetSelectOverlay { .. } => "Cap Target Select".to_string(),
-            Self::Teleprompter => "Cap Teleprompter".to_string(),
-            _ => "Cap".to_string(),
+            Self::Settings => "NeoCap Settings".to_string(),
+            Self::WindowCaptureOccluder { .. } => "NeoCap Window Capture Occluder".to_string(),
+            Self::CaptureArea => "NeoCap Capture Area".to_string(),
+            Self::RecordingControls => "NeoCap Recording Controls".to_string(),
+            Self::Editor { .. } => "NeoCap Editor".to_string(),
+            Self::ScreenshotEditor { .. } => "NeoCap Screenshot Editor".to_string(),
+            Self::ModeSelect => "NeoCap Mode Selection".to_string(),
+            Self::Onboarding => "Welcome to NeoCap".to_string(),
+            Self::Camera => "NeoCap Camera".to_string(),
+            Self::RecordingsOverlay => "NeoCap Recordings Overlay".to_string(),
+            Self::TargetSelectOverlay { .. } => "NeoCap Target Select".to_string(),
+            Self::Teleprompter => "NeoCap Teleprompter".to_string(),
+            _ => "NeoCap".to_string(),
         }
     }
 
@@ -3686,4 +3686,21 @@ pub fn editor_window_for_path(app: &AppHandle, path: &std::path::Path) -> Option
         guard.iter().find(|(p, _)| p == path).map(|(_, id)| *id)?
     };
     CapWindowId::Editor { id }.get(app)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CapWindowId;
+
+    #[test]
+    fn visible_window_titles_use_neocap_branding() {
+        assert_eq!(CapWindowId::Main.title(), "NeoCap");
+        assert_eq!(CapWindowId::Settings.title(), "NeoCap Settings");
+        assert_eq!(CapWindowId::Onboarding.title(), "Welcome to NeoCap");
+        assert_eq!(
+            CapWindowId::RecordingControls.title(),
+            "NeoCap Recording Controls"
+        );
+        assert_eq!(CapWindowId::Teleprompter.title(), "NeoCap Teleprompter");
+    }
 }

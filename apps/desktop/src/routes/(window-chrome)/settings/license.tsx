@@ -30,12 +30,12 @@ export default function Page() {
 						<div class="flex flex-col items-center p-6 mx-auto space-y-3 w-full max-w-md text-white rounded-3xl border bg-gray-2 border-gray-3">
 							<div class="flex flex-col gap-2 items-center">
 								<h3 class="text-2xl font-medium text-gray-12">
-									Cap Pro License
+									NeoCap Pro License
 								</h3>
 							</div>
 							<p class="text-center text-gray-11">
 								Your account is upgraded to{" "}
-								<span class="font-semibold text-blue-500">Cap Pro</span> and
+								<span class="font-semibold text-blue-500">NeoCap Pro</span> and
 								already includes a commercial license.
 							</p>
 						</div>
@@ -278,7 +278,7 @@ function CommercialLicensePurchase() {
 					<div class="flex flex-col gap-4 justify-center items-center p-5 rounded-t-none rounded-b-xl border border-t-0 md:border-t md:border-l-0 md:rounded-bl-none md:rounded-tr-xl md:rounded-br-xl md:w-1/2 border-gray-3">
 						<ul class="flex flex-col gap-2 list-none">
 							{[
-								"Commercial Use of Cap Recorder + Editor",
+								"Commercial Use of NeoCap Recorder + Editor",
 								"Community Support",
 								"Local-only features",
 								"Perpetual license option",

@@ -525,7 +525,7 @@ function ClipsSidebarInner(props: { open: boolean; class?: string }) {
 		const recordingsPath = await join(await appDataDir(), "recordings");
 		const path = await open({
 			defaultPath: recordingsPath,
-			filters: [{ name: "Cap Recording", extensions: ["cap"] }],
+			filters: [{ name: "NeoCap Recording", extensions: ["cap"] }],
 			multiple: false,
 		});
 		if (typeof path === "string") await importRecordingPath(path);

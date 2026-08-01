@@ -4518,7 +4518,7 @@ function ClipSegmentConfig(props: {
 				</p>
 				<Show when={offsetsAutoCalculated()}>
 					<p class="text-gray-11">
-						Cap calculated these offsets automatically to keep audio in sync
+						NeoCap calculated these offsets automatically to keep audio in sync
 						with the video. Adjust them if anything still sounds off.
 					</p>
 				</Show>

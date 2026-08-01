@@ -1194,6 +1194,30 @@ pub enum RecordingAction {
 const MICROPHONE_INPUT_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 const CAMERA_INPUT_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 
+const SELECTED_CAMERA_UNAVAILABLE_MESSAGE: &str = "The selected camera is no longer available. Reconnect it or choose another camera in Settings, then try recording again.";
+const SELECTED_MICROPHONE_UNAVAILABLE_MESSAGE: &str = "The selected microphone is no longer available. Reconnect it or choose another microphone in Settings, then try recording again.";
+const SELECTED_RECORDING_DEVICE_UNAVAILABLE_MESSAGE: &str = "A selected camera or microphone is no longer available. Reconnect it or choose another device in Settings, then try recording again.";
+
+fn selected_camera_unavailable_error() -> anyhow::Error {
+    anyhow!(SELECTED_CAMERA_UNAVAILABLE_MESSAGE)
+}
+
+fn selected_microphone_unavailable_error() -> anyhow::Error {
+    anyhow!(SELECTED_MICROPHONE_UNAVAILABLE_MESSAGE)
+}
+
+/// `DeviceNotFound` is an internal feed error. It must never reach the desktop UI
+/// verbatim because, by the time an actor-builder reports it, the original feed
+/// type may no longer be available at this boundary. The normal camera/microphone
+/// initialization paths retain the more precise message above.
+fn recording_start_error_message(error: &str) -> String {
+    if error.contains("DeviceNotFound") {
+        SELECTED_RECORDING_DEVICE_UNAVAILABLE_MESSAGE.to_string()
+    } else {
+        error.to_string()
+    }
+}
+
 fn camera_id_label(id: &camera::DeviceOrModelID) -> String {
     match id {
         camera::DeviceOrModelID::DeviceID(device_id) => device_id.clone(),
@@ -1215,18 +1239,26 @@ async fn initialize_selected_camera(
     settings: Option<camera::CameraDeviceSettings>,
 ) -> anyhow::Result<()> {
     let label = camera_id_label(id);
-    let ready = camera_feed
+    let ready = match camera_feed
         .ask(camera::SetInput {
             id: id.clone(),
             settings,
         })
         .await
-        .map_err(|err| anyhow!("Failed to initialize selected camera '{label}': {err}"))?;
+    {
+        Ok(ready) => ready,
+        Err(kameo::error::SendError::HandlerError(camera::SetInputError::DeviceNotFound)) => {
+            return Err(selected_camera_unavailable_error());
+        }
+        Err(err) => {
+            return Err(anyhow!(
+                "Failed to initialize selected camera '{label}': {err}"
+            ));
+        }
+    };
 
     ready.await.map(|_| ()).map_err(|err| match err {
-        camera::SetInputError::DeviceNotFound => {
-            anyhow!("Selected camera '{label}' is no longer available")
-        }
+        camera::SetInputError::DeviceNotFound => selected_camera_unavailable_error(),
         err => anyhow!("Failed to initialize selected camera '{label}': {err}"),
     })
 }
@@ -1360,18 +1392,26 @@ async fn initialize_selected_microphone(
     label: &str,
     settings: Option<microphone::MicrophoneDeviceSettings>,
 ) -> anyhow::Result<()> {
-    let ready = mic_feed
+    let ready = match mic_feed
         .ask(microphone::SetInput {
             label: label.to_string(),
             settings,
         })
         .await
-        .map_err(|err| anyhow!("Failed to initialize selected microphone '{label}': {err}"))?;
+    {
+        Ok(ready) => ready,
+        Err(kameo::error::SendError::HandlerError(microphone::SetInputError::DeviceNotFound)) => {
+            return Err(selected_microphone_unavailable_error());
+        }
+        Err(err) => {
+            return Err(anyhow!(
+                "Failed to initialize selected microphone '{label}': {err}"
+            ));
+        }
+    };
 
     ready.await.map(|_| ()).map_err(|err| match err {
-        microphone::SetInputError::DeviceNotFound => {
-            anyhow!("Selected microphone '{label}' is no longer available")
-        }
+        microphone::SetInputError::DeviceNotFound => selected_microphone_unavailable_error(),
         err => anyhow!("Failed to initialize selected microphone '{label}': {err}"),
     })
 }
@@ -2138,26 +2178,16 @@ pub async fn start_recording(
         Ok(Ok(v)) => v,
         Ok(Err(err)) => {
             let message = format!("{err:#}");
-            handle_spawn_failure(
-                &app,
-                &state_mtx,
-                project_file_path.as_path(),
-                message.clone(),
-            )
-            .await?;
-            return Err(message);
+            let user_message = recording_start_error_message(&message);
+            handle_spawn_failure(&app, &state_mtx, project_file_path.as_path(), message).await?;
+            return Err(user_message);
         }
         Err(panic) => {
             let panic_msg = panic_message(panic);
             let message = format!("Failed to spawn recording actor: {panic_msg}");
-            handle_spawn_failure(
-                &app,
-                &state_mtx,
-                project_file_path.as_path(),
-                message.clone(),
-            )
-            .await?;
-            return Err(message);
+            let user_message = recording_start_error_message(&message);
+            handle_spawn_failure(&app, &state_mtx, project_file_path.as_path(), message).await?;
+            return Err(user_message);
         }
     };
 
@@ -2513,8 +2543,10 @@ async fn handle_spawn_failure(
         "Recording actor spawn failed"
     );
 
+    let user_message = recording_start_error_message(&message);
+
     let _ = RecordingEvent::Failed {
-        error: message.clone(),
+        error: user_message.clone(),
     }
     .emit(app);
 
@@ -2527,7 +2559,7 @@ async fn handle_spawn_failure(
         let mut dialog = MessageDialogBuilder::new(
             app.dialog().clone(),
             "An error occurred".to_string(),
-            message.clone(),
+            user_message.clone(),
         )
         .kind(tauri_plugin_dialog::MessageDialogKind::Error);
 
@@ -2541,7 +2573,7 @@ async fn handle_spawn_failure(
     let mut state = state_mtx.write().await;
     let _ = handle_recording_end(
         app.clone(),
-        Err(message),
+        Err(user_message),
         &mut state,
         recording_dir.to_path_buf(),
     )
@@ -4187,6 +4219,22 @@ mod tests {
     #[test]
     fn mic_feed_locked_ignores_unrelated_errors() {
         assert!(!mic_feed_locked(&anyhow!("different failure")));
+    }
+
+    #[test]
+    fn maps_raw_device_not_found_to_a_recoverable_start_error() {
+        assert_eq!(
+            recording_start_error_message("DeviceNotFound"),
+            SELECTED_RECORDING_DEVICE_UNAVAILABLE_MESSAGE
+        );
+    }
+
+    #[test]
+    fn preserves_non_device_start_errors() {
+        assert_eq!(
+            recording_start_error_message("Failed to create recording directory"),
+            "Failed to create recording directory"
+        );
     }
 
     #[test]

@@ -37,6 +37,8 @@ import { createStore, produce, reconcile } from "solid-js/store";
 import toast from "solid-toast";
 import { Transition } from "solid-transition-group";
 import Mode from "~/components/Mode";
+
+import { NeoCapBrand } from "~/components/NeoCapBrand";
 import { RecoveryToast } from "~/components/RecoveryToast";
 import Tooltip from "~/components/Tooltip";
 import { Input } from "~/routes/editor/ui";
@@ -84,8 +86,6 @@ import {
 	type UploadProgress,
 } from "~/utils/tauri";
 import { openTeleprompter } from "~/utils/teleprompter";
-import IconCapLogoFull from "~icons/cap/logo-full";
-import IconCapLogoFullDark from "~icons/cap/logo-full-dark";
 import IconLucideAppWindowMac from "~icons/lucide/app-window-mac";
 import IconLucideArrowLeft from "~icons/lucide/arrow-left";
 import IconLucideBug from "~icons/lucide/bug";
@@ -3116,16 +3116,11 @@ function Page() {
 				<div class="flex items-center justify-between mt-[16px] mb-[6px]">
 					<div class="flex items-center space-x-1">
 						<a
-							class="*:w-[92px] *:h-auto text-(--text-primary)"
+							class="text-(--text-primary)"
 							target="_blank"
-							href={
-								auth.data
-									? new URL("/dashboard", serverUrl()).toString()
-									: serverUrl()
-							}
+							href="https://github.com/haoneowu/neocap"
 						>
-							<IconCapLogoFullDark class="hidden dark:block" />
-							<IconCapLogoFull class="block dark:hidden" />
+							<NeoCapBrand class="flex items-center gap-2" />
 						</a>
 						<ErrorBoundary fallback={null}>
 							<Suspense>

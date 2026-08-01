@@ -25,7 +25,7 @@ export async function openTeleprompter() {
 
 	const teleprompterWindow = new WebviewWindow(TELEPROMPTER_WINDOW_LABEL, {
 		url: "/teleprompter",
-		title: "Cap Teleprompter",
+		title: "NeoCap Teleprompter",
 		width: 560,
 		height: 320,
 		minWidth: 420,
